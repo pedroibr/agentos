@@ -47,12 +47,14 @@
       cfg = {};
     }
 
+    const transcriptAttr = wrap.getAttribute('data-show-transcript');
     const restBase = (cfg.rest || '').replace(/\/$/, '');
     const nonce = cfg.nonce || '';
     const postId = cfg.post_id || null;
     const agentId = cfg.agent_id || '';
     const contextParams = Array.isArray(cfg.context_params) ? cfg.context_params : [];
     const loggingEnabled = !!cfg.logging;
+    const transcriptEnabled = transcriptAttr !== '0' && transcriptAttr !== 'false' && cfg.show_transcript !== false;
     const { info: logInfo, error: logError, debug: logDebug } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
@@ -71,10 +73,11 @@
       log: $('.agentos-transcript .agentos-transcript-log', wrap),
       panel: $('.agentos-transcript', wrap)
     };
+    const canRenderTranscript = transcriptEnabled && !!els.log && !!els.panel;
 
     const modeAttr = wrap.getAttribute('data-mode');
     const mode = modeAttr || cfg.mode || 'voice'; // voice | text | both
-    if (mode === 'text' || mode === 'both') {
+    if ((mode === 'text' || mode === 'both') && els.textUI) {
       els.textUI.style.display = 'block';
     }
 
@@ -82,9 +85,13 @@
     let activeModel = '', activeVoice = '';
     const transcript = []; // [{role,text}]
 
-    function setStatus(t){ els.status.textContent = t; }
-    function scrollToBottom(){ els.panel.scrollTop = els.panel.scrollHeight; }
+    function setStatus(t){ if (els.status) els.status.textContent = t; }
+    function scrollToBottom(){
+      if (!canRenderTranscript) return;
+      els.panel.scrollTop = els.panel.scrollHeight;
+    }
     function addBubble(role, text=''){
+      if (!canRenderTranscript) return null;
       const div = document.createElement('div');
       div.className = 'msg ' + (role==='assistant'?'assistant':'user');
       div.style.cssText = 'max-width:90%;margin:6px 0;padding:10px 12px;border-radius:12px;white-space:pre-wrap;'+
@@ -99,10 +106,18 @@
     let currentAssistantBubble = null;
     let assistantIdleTimer = null;
     function updateAssistant(delta){
+      if (!canRenderTranscript) {
+        assistantBuffer += delta;
+        clearTimeout(assistantIdleTimer);
+        assistantIdleTimer = setTimeout(commitAssistant, 1200);
+        return;
+      }
       if (!currentAssistantBubble) currentAssistantBubble = addBubble('assistant','');
       assistantBuffer += delta;
-      currentAssistantBubble.innerHTML += escapeHtml(delta);
-      scrollToBottom();
+      if (currentAssistantBubble) {
+        currentAssistantBubble.innerHTML += escapeHtml(delta);
+        scrollToBottom();
+      }
       clearTimeout(assistantIdleTimer);
       assistantIdleTimer = setTimeout(commitAssistant, 1200);
     }
@@ -174,9 +189,11 @@
           if (r.isFinal) finalText += r[0].transcript;
           else interim += r[0].transcript;
         }
-        if (!bubble) bubble = addBubble('user','');
-        bubble.innerHTML = escapeHtml((finalText + interim).trim());
-        scrollToBottom();
+        if (!bubble && canRenderTranscript) bubble = addBubble('user','');
+        if (bubble) {
+          bubble.innerHTML = escapeHtml((finalText + interim).trim());
+          scrollToBottom();
+        }
         if (finalText.trim()){
           transcript.push({ role:'user', text: finalText.trim() });
           finalText = ''; bubble = null;
@@ -192,7 +209,9 @@
     function sendTextMessage(txt) {
       const msg = (txt||'').trim();
       if (!msg) return;
-      addBubble('user', msg);
+      if (canRenderTranscript) {
+        addBubble('user', msg);
+      }
       transcript.push({ role:'user', text: msg });
       if (dc && dc.readyState === 'open') {
         dc.send(JSON.stringify({
@@ -204,6 +223,7 @@
     }
 
     els.textSend?.addEventListener('click', () => {
+      if (!els.textInput) return;
       sendTextMessage(els.textInput.value);
       els.textInput.value = '';
     });
@@ -212,7 +232,7 @@
     els.start.addEventListener('click', async () => {
       try {
         logInfo('Start clicked', { agentId, postId, mode });
-        els.start.disabled = true; els.save.disabled = true;
+        els.start.disabled = true; if (els.save) els.save.disabled = true;
         activeModel = ''; activeVoice = '';
         window._agentosModel = ''; window._agentosVoice = '';
         SESSION_ID = uuidv4();
@@ -274,9 +294,11 @@
           dc.send(JSON.stringify({ type:'response.create' }));
         }
 
-        els.stop.disabled = false; els.save.disabled = true;
+        els.stop.disabled = false; if (els.save) els.save.disabled = true;
         // Enable save after some content arrives
-        setTimeout(()=>{ els.save.disabled = false; }, 1500);
+        if (els.save) {
+          setTimeout(()=>{ els.save.disabled = false; }, 1500);
+        }
         logInfo('Session ready', { model: activeModel, voice: activeVoice });
 
       } catch (e) {
@@ -296,12 +318,12 @@
         pc = null; dc = null; micStream = null;
         els.stop.disabled = true;
         els.start.disabled = false;
-        els.save.disabled = transcript.length === 0;
+        if (els.save) els.save.disabled = transcript.length === 0;
         setStatus('Disconnected.');
       }
     });
 
-    els.save.addEventListener('click', async () => {
+    els.save?.addEventListener('click', async () => {
       try {
         // commit assistant buffer
         if (typeof commitAssistant === 'function') commitAssistant();
