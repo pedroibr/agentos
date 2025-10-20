@@ -1,0 +1,2 @@
+- Upload zip in WP Admin → Plugins → Add New → Upload
+- Or copy folder to wp-content/plugins/

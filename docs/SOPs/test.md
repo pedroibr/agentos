@@ -1,0 +1,3 @@
+- Activate plugin
+- Settings → AgentOS: set API key source, post types, field maps
+- Add `[agentos mode="voice"]` to a test post
