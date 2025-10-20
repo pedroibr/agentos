@@ -16,6 +16,23 @@
   function getAnonId(){ try{ const k='agentos_anon_id'; let v=localStorage.getItem(k); if(!v){ v=uuidv4(); localStorage.setItem(k,v);} return v; }catch(_){ return ''; } }
 
   document.querySelectorAll('.agentos-wrap').forEach((wrap) => {
+    let cfg = {};
+    try {
+      cfg = JSON.parse(wrap.dataset.config || '{}');
+    } catch (_) {
+      cfg = {};
+    }
+
+    const restBase = (cfg.rest || '').replace(/\/$/, '');
+    const nonce = cfg.nonce || '';
+    const postId = cfg.post_id || null;
+    const agentId = cfg.agent_id || '';
+    const contextParams = Array.isArray(cfg.context_params) ? cfg.context_params : [];
+
+    if (!restBase || !postId || !agentId) {
+      return;
+    }
+
     const els = {
       start: $('.agentos-bar', wrap).querySelector('.agentos-start'),
       stop:  $('.agentos-bar', wrap).querySelector('.agentos-stop'),
@@ -30,7 +47,7 @@
     };
 
     const modeAttr = wrap.getAttribute('data-mode');
-    const mode = modeAttr || (AgentOSCfg?.default_mode || 'voice'); // voice | text | both
+    const mode = modeAttr || cfg.mode || 'voice'; // voice | text | both
     if (mode === 'text' || mode === 'both') {
       els.textUI.style.display = 'block';
     }
@@ -87,10 +104,14 @@
     }
 
     async function getToken() {
-      const res = await fetch(AgentOSCfg.rest + '/realtime-token', {
+      const res = await fetch(restBase + '/realtime-token', {
         method: 'POST',
-        headers: {'Content-Type':'application/json','X-WP-Nonce': AgentOSCfg.nonce},
-        body: JSON.stringify({ post_id: AgentOSCfg.post_id, ctx: getCtxFromURL(AgentOSCfg.context_params) })
+        headers: {'Content-Type':'application/json','X-WP-Nonce': nonce},
+        body: JSON.stringify({
+          post_id: postId,
+          agent_id: agentId,
+          ctx: getCtxFromURL(contextParams)
+        })
       });
       if (!res.ok) throw new Error('Token request failed');
       return res.json();
@@ -171,7 +192,7 @@
 
         setStatus('Creating session…');
         const tk = await getToken();
-        const { client_secret, model, voice, lesson, user_prompt } = tk;
+        const { client_secret, model, voice, user_prompt } = tk;
         if (!client_secret) throw new Error('Missing ephemeral token');
         activeModel = model || '';
         activeVoice = voice || '';
@@ -202,20 +223,10 @@
 
         setStatus('Connected ✅');
 
-        // Inject optional user_prompt/lesson context
+        // Inject optional user-supplied context
         const contextBlocks = [];
         if (user_prompt) {
           contextBlocks.push(`User Prompt:\n${user_prompt}`);
-        }
-        if (lesson && (lesson.title || lesson.story || (lesson.questions||[]).length)) {
-          const lines = [];
-          lines.push(`Lesson Title: ${lesson.title||'(untitled)'}`);
-          lines.push(`Story:\n${lesson.story||'(none)'}\n`);
-          if ((lesson.questions||[]).length) {
-            lines.push('Comprehension Questions:');
-            (lesson.questions||[]).forEach((q,i)=>lines.push(`${i+1}. ${q}`));
-          }
-          contextBlocks.push(lines.join('\n'));
         }
         if (contextBlocks.length) {
           dc.send(JSON.stringify({
@@ -256,7 +267,8 @@
         // commit assistant buffer
         if (typeof commitAssistant === 'function') commitAssistant();
         const payload = {
-          post_id: AgentOSCfg.post_id,
+          post_id: postId,
+          agent_id: agentId,
           session_id: SESSION_ID,
           anon_id: getAnonId(),
           model: activeModel || '',
@@ -264,9 +276,9 @@
           user_agent: navigator.userAgent,
           transcript
         };
-        const res = await fetch(AgentOSCfg.rest + '/transcript-db', {
+        const res = await fetch(restBase + '/transcript-db', {
           method:'POST',
-          headers:{'Content-Type':'application/json','X-WP-Nonce':AgentOSCfg.nonce},
+          headers:{'Content-Type':'application/json','X-WP-Nonce':nonce},
           body: JSON.stringify(payload)
         });
         const data = await res.json();
