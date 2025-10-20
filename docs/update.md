@@ -6,3 +6,4 @@
 [2025-10-20 15:55][v0.3.2] Added optional `[AgentOS]` console logging (toggle in settings) for Start/session lifecycle, API key source selection, and admin field-map changes; fixed selector helper bug blocking agent startup.
 [2025-10-20 16:25][v0.3.3] Fixed transcript save error reporting, ensured the table migrates automatically, and now persist the logged-in user email with each transcript.
 [2025-10-20 18:10][v0.4.1] Refactored the plugin into PSR-4 namespaced services with template partials, added PHPCS configuration, removed PHPUnit scaffolding, refreshed developer docs with the new layout, and introduced per-agent control to hide the public transcript block (UI and JS updated accordingly).
+[2025-10-20 19:05][v0.5.0] Shipped the front-end design system: new modular layout, CSS-based theming tokens, responsive transcript/composer panes, Start/Stop toolbar polish, and docs/SOP refresh describing the styling workflow.

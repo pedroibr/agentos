@@ -1,3 +1,5 @@
-- Activate plugin
-- Settings → AgentOS: set API key source, post types, field maps
-- Add `[agentos mode="voice"]` to a test post
+- Activate plugin.
+- Settings → AgentOS: set API key source, post types, and field maps.
+- Agents: ensure “Display transcript panel” toggle behaves in both enabled/disabled states.
+- Add `[agentos mode="voice"]` and `[agentos mode="text"]` to test posts; confirm toolbar, composer, and transcript blocks render correctly on desktop and mobile breakpoints.
+- Verify console shows no JS errors and `phpcs --standard=phpcs.xml.dist` passes.

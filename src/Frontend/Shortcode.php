@@ -63,6 +63,7 @@ class Shortcode
 
         $this->assets->registerFrontend();
         wp_enqueue_script('agentos-embed');
+        wp_enqueue_style('agentos-embed');
 
         $mode = $atts['mode'] ? sanitize_key($atts['mode']) : $agent['default_mode'];
         if (!in_array($mode, ['voice', 'text', 'both'], true)) {

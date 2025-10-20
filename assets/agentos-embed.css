@@ -1,0 +1,296 @@
+:root {
+  color-scheme: light;
+}
+
+.agentos-wrap {
+  --agentos-font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --agentos-font-size: 14px;
+  --agentos-line-height: 1.5;
+  --agentos-bg: #ffffff;
+  --agentos-surface: #f3f6fb;
+  --agentos-surface-muted: #eef2f8;
+  --agentos-border-color: rgba(15, 23, 42, 0.08);
+  --agentos-border: 1px solid var(--agentos-border-color);
+  --agentos-radius: 16px;
+  --agentos-shadow: 0 14px 28px -18px rgba(15, 23, 42, 0.28);
+  --agentos-accent: #2563eb;
+  --agentos-accent-strong: #1d4ed8;
+  --agentos-danger: #ef4444;
+  --agentos-text: #0f172a;
+  --agentos-text-muted: #64748b;
+  --agentos-transcript-height: 70vh;
+  font-family: var(--agentos-font-family);
+  font-size: var(--agentos-font-size);
+  line-height: var(--agentos-line-height);
+  color: var(--agentos-text);
+  display: block;
+  background: transparent;
+}
+
+.agentos-shell {
+  display: flex;
+  gap: 24px;
+  align-items: stretch;
+  background: var(--agentos-bg);
+  border-radius: var(--agentos-radius);
+  border: var(--agentos-border);
+  box-shadow: var(--agentos-shadow);
+  padding: 20px;
+}
+
+.agentos-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  flex: 1;
+  min-width: 0;
+}
+
+.agentos-pane--transcript {
+  max-width: 400px;
+  flex-basis: 360px;
+}
+
+.agentos-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--agentos-surface);
+  border-radius: calc(var(--agentos-radius) - 4px);
+  border: var(--agentos-border);
+  padding: 10px 12px;
+}
+
+.agentos-toolbar__group {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.agentos-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.4;
+  border: none;
+  cursor: pointer;
+  background: var(--agentos-surface-muted);
+  color: var(--agentos-text);
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.agentos-btn--primary {
+  background: var(--agentos-accent);
+  color: #fff;
+}
+
+.agentos-btn--ghost {
+  background: transparent;
+  border: var(--agentos-border);
+}
+
+.agentos-btn--accent {
+  background: var(--agentos-text);
+  color: #fff;
+}
+
+.agentos-btn:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.6);
+  outline-offset: 2px;
+}
+
+.agentos-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px -16px rgba(15, 23, 42, 0.35);
+}
+
+.agentos-btn--primary:not(:disabled):hover {
+  background: var(--agentos-accent-strong);
+}
+
+.agentos-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  box-shadow: none;
+  transform: none;
+}
+
+.agentos-status {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--agentos-text-muted);
+}
+
+.agentos-status[data-status="recording"]::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--agentos-danger);
+  margin-right: 6px;
+  animation: agentos-pulse 1.2s infinite;
+}
+
+@keyframes agentos-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.agentos-audio {
+  width: 100%;
+  display: none;
+}
+
+.agentos-text-ui {
+  display: none;
+  background: var(--agentos-surface);
+  border-radius: calc(var(--agentos-radius) - 4px);
+  border: var(--agentos-border);
+  padding: 16px;
+  gap: 12px;
+  flex-direction: column;
+}
+
+.agentos-text-ui.is-visible {
+  display: flex;
+}
+
+.agentos-text-input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  padding: 12px 14px;
+  font: inherit;
+  min-height: 96px;
+  resize: vertical;
+  background: #fff;
+  color: var(--agentos-text);
+  transition: border 120ms ease, box-shadow 120ms ease;
+}
+
+.agentos-text-input:focus {
+  border-color: var(--agentos-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+  outline: none;
+}
+
+.agentos-composer__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.agentos-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--agentos-bg);
+  border-radius: calc(var(--agentos-radius) - 4px);
+  border: var(--agentos-border);
+  height: var(--agentos-transcript-height);
+  padding: 16px;
+  overflow: hidden;
+}
+
+.agentos-transcript__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--agentos-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agentos-transcript-log {
+  overflow-y: auto;
+  padding-right: 6px;
+  position: relative;
+  scroll-behavior: smooth;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agentos-transcript-log::after {
+  content: "";
+  position: sticky;
+  bottom: -6px;
+  height: 12px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--agentos-bg));
+}
+
+.agentos-transcript-log .msg {
+  max-width: 90%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+  color: var(--agentos-text);
+  box-shadow: 0 6px 18px -14px rgba(15, 23, 42, 0.5);
+}
+
+.agentos-transcript-log .msg.user {
+  align-self: flex-start;
+  background: #fff;
+}
+
+.agentos-transcript-log .msg.assistant {
+  align-self: flex-end;
+  background: var(--agentos-surface-muted);
+}
+
+.agentos-transcript-empty {
+  font-size: 13px;
+  color: var(--agentos-text-muted);
+  text-align: center;
+  margin-top: 24px;
+}
+
+.agentos-wrap[data-mode="voice"] .agentos-text-ui {
+  display: none !important;
+}
+
+.agentos-wrap[data-show-transcript="0"] .agentos-pane--transcript {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .agentos-shell {
+    flex-direction: column;
+    padding: 16px;
+  }
+
+  .agentos-pane--transcript {
+    max-width: none;
+    flex-basis: auto;
+  }
+
+  .agentos-transcript {
+    height: 420px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agentos-transcript-log {
+    scroll-behavior: auto;
+  }
+
+  .agentos-btn {
+    transition: none;
+  }
+}

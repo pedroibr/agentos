@@ -78,14 +78,27 @@
     const modeAttr = wrap.getAttribute('data-mode');
     const mode = modeAttr || cfg.mode || 'voice'; // voice | text | both
     if ((mode === 'text' || mode === 'both') && els.textUI) {
-      els.textUI.style.display = 'block';
+      els.textUI.classList.add('is-visible');
     }
 
     let pc, micStream, dc, SESSION_ID=null;
     let activeModel = '', activeVoice = '';
     const transcript = []; // [{role,text}]
 
-    function setStatus(t){ if (els.status) els.status.textContent = t; }
+    function setStatus(t){
+      if (!els.status) return;
+      els.status.textContent = t;
+      if (!t) {
+        delete els.status.dataset.status;
+        return;
+      }
+      const normalized = t.toLowerCase();
+      if (normalized.includes('record')) {
+        els.status.dataset.status = 'recording';
+      } else {
+        delete els.status.dataset.status;
+      }
+    }
     function scrollToBottom(){
       if (!canRenderTranscript) return;
       els.panel.scrollTop = els.panel.scrollHeight;

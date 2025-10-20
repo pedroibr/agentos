@@ -15,5 +15,12 @@ class Registrar
             Config::VERSION,
             true
         );
+
+        wp_register_style(
+            'agentos-embed',
+            plugins_url('assets/agentos-embed.css', Config::pluginFile()),
+            [],
+            Config::VERSION
+        );
     }
 }
