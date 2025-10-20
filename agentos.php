@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AgentOS – Dynamic AI Agents for WordPress
  * Description: Load customizable AI agents (text/voice) per post type. Map ACF/meta fields to agent parameters. Provides shortcodes and REST endpoints.
- * Version: 0.2.0
+ * Version: 0.3.3
  * Author: Pedro Raimundo
  * Text Domain: agentos
  */
@@ -13,6 +13,7 @@ class AgentOS_Plugin {
   const OPT_SETTINGS = 'agentos_settings';
   const OPT_AGENTS   = 'agentos_agents';
   const SLUG         = 'agentos';
+  const VERSION      = '0.3.3';
   const FALLBACK_MODEL = 'gpt-realtime-mini-2025-10-06';
   const FALLBACK_VOICE = 'alloy';
   const FALLBACK_PROMPT = 'You are a helpful, concise AI agent. Speak naturally.';
@@ -23,6 +24,7 @@ class AgentOS_Plugin {
     add_action('admin_init', [$this, 'register_settings']);
     add_action('admin_post_agentos_save_agent', [$this, 'handle_save_agent']);
     add_action('admin_post_agentos_delete_agent', [$this, 'handle_delete_agent']);
+    add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
 
     // Front
     add_action('init', [$this, 'register_shortcodes']);
@@ -77,6 +79,7 @@ class AgentOS_Plugin {
         'api_key_source' => 'constant', // env | constant | manual
         'api_key_manual' => '',
         'context_params' => ['nome','produto','etapa'],
+        'enable_logging' => false,
       ]
     ]);
   }
@@ -87,6 +90,7 @@ class AgentOS_Plugin {
     $source = $out['api_key_source'] ?? 'constant';
     $out['api_key_source'] = in_array($source, ['env','constant','manual'], true) ? $source : 'constant';
     $out['api_key_manual'] = sanitize_text_field($out['api_key_manual'] ?? '');
+    $out['enable_logging'] = !empty($out['enable_logging']) ? 1 : 0;
 
     $ctx = $out['context_params'] ?? ['nome','produto','etapa'];
     if (is_string($ctx)) {
@@ -108,6 +112,7 @@ class AgentOS_Plugin {
       'api_key_source' => 'constant',
       'api_key_manual' => '',
       'context_params' => ['nome','produto','etapa'],
+      'enable_logging' => false,
     ]);
   }
 
@@ -150,9 +155,35 @@ class AgentOS_Plugin {
               <p class="description"><?php esc_html_e('Comma separated list of URL parameters passed through to the agent.', 'agentos'); ?></p>
             </td>
           </tr>
+          <tr>
+            <th scope="row"><?php esc_html_e('Enable console logging', 'agentos'); ?></th>
+            <td>
+              <label>
+                <input type="checkbox" name="<?php echo esc_attr(self::OPT_SETTINGS); ?>[enable_logging]" value="1" <?php checked(!empty($s['enable_logging'])); ?>>
+                <?php esc_html_e('Output AgentOS debug logs in browser console for troubleshooting.', 'agentos'); ?>
+              </label>
+            </td>
+          </tr>
         </table>
         <?php submit_button(); ?>
       </form>
+      <script>
+        (function(){
+          if (!<?php echo $s['enable_logging'] ? 'true' : 'false'; ?>) {
+            return;
+          }
+          const prefix = '[AgentOS][Settings]';
+          const fieldName = '<?php echo esc_js(self::OPT_SETTINGS); ?>[api_key_source]';
+          const log = (...args) => { try { console.info(prefix, ...args); } catch (_) {} };
+          document.addEventListener('DOMContentLoaded', function(){
+            document.querySelectorAll('input[name="'+fieldName+'"]').forEach(function(radio){
+              radio.addEventListener('change', function(){
+                log('API key source changed', this.value);
+              });
+            });
+          });
+        })();
+      </script>
     </div>
     <?php
   }
@@ -236,6 +267,45 @@ class AgentOS_Plugin {
 
     $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos');
     $public_post_types = get_post_types(['public' => true], 'objects');
+    $field_options = $this->collect_available_fields($public_post_types);
+    $settings = $this->get_settings();
+    $post_type_labels = [];
+    foreach ($public_post_types as $slug => $obj) {
+      $label = $obj->labels->singular_name ?? $obj->label ?? $slug;
+      $post_type_labels[$slug] = $label ?: $slug;
+    }
+
+    if (!wp_script_is('agentos-admin', 'registered')) {
+      wp_register_script('agentos-admin', plugins_url('assets/agentos-admin.js', __FILE__), ['jquery'], self::VERSION, true);
+    }
+    wp_enqueue_script('agentos-admin');
+    wp_localize_script('agentos-admin', 'AgentOSAdminData', [
+      'postTypes' => $post_type_labels,
+      'fieldOptions' => $field_options,
+      'existingMaps' => $agent['field_maps'] ?? [],
+      'selectedPostTypes' => $agent['post_types'] ?? [],
+      'hasAcf' => function_exists('acf_get_field_groups'),
+      'loggingEnabled' => !empty($settings['enable_logging']),
+      'strings' => [
+        'noFields' => __('No ACF fields detected for this post type.', 'agentos'),
+        'customLabel' => __('Custom meta key…', 'agentos'),
+        'placeholders' => [
+          'model' => __('Select model field', 'agentos'),
+          'voice' => __('Select voice field', 'agentos'),
+          'system_prompt' => __('Select system prompt field', 'agentos'),
+          'user_prompt' => __('Select user prompt field', 'agentos'),
+        ],
+        'fieldHeadings' => [
+          'model' => __('Model Field', 'agentos'),
+          'voice' => __('Voice Field', 'agentos'),
+          'system_prompt' => __('System Prompt Field', 'agentos'),
+          'user_prompt' => __('User Prompt Field', 'agentos'),
+        ],
+        'customPlaceholder' => __('Meta key (e.g. field_name)', 'agentos'),
+        'postTypePlaceholder' => __('Select post types…', 'agentos'),
+        'emptyState' => __('Select at least one post type to configure field mappings.', 'agentos'),
+      ],
+    ]);
     ?>
     <div class="wrap">
       <h1><?php echo esc_html($title); ?></h1>
@@ -282,37 +352,90 @@ class AgentOS_Plugin {
             </td>
           </tr>
           <tr>
-            <th scope="row"><?php esc_html_e('Allowed Post Types', 'agentos'); ?></th>
+            <th scope="row"><label for="agentos-post-types"><?php esc_html_e('Allowed Post Types', 'agentos'); ?></label></th>
             <td>
-              <?php foreach ($public_post_types as $pt => $obj): ?>
-                <label style="display:inline-block;margin-right:12px;">
-                  <input type="checkbox" name="agent[post_types][]" value="<?php echo esc_attr($pt); ?>" <?php checked(in_array($pt, $agent['post_types'], true)); ?>>
-                  <?php echo esc_html($obj->labels->singular_name ?: $pt); ?>
-                </label>
-              <?php endforeach; ?>
-              <p class="description"><?php esc_html_e('Agents will only appear on these post types.', 'agentos'); ?></p>
+              <select id="agentos-post-types" name="agent[post_types][]" multiple size="5" style="min-width:260px;">
+                <?php foreach ($public_post_types as $pt => $obj): 
+                  $label = $obj->labels->singular_name ?: $pt;
+                  ?>
+                  <option value="<?php echo esc_attr($pt); ?>" <?php selected(in_array($pt, $agent['post_types'], true)); ?>>
+                    <?php echo esc_html($label); ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+              <p class="description"><?php esc_html_e('Choose the post types this agent supports. Use Ctrl/Cmd + click for multiple.', 'agentos'); ?></p>
             </td>
           </tr>
         </table>
 
         <h2><?php esc_html_e('Field Mappings', 'agentos'); ?></h2>
-        <p><?php esc_html_e('Map to ACF field names or plain meta keys. Leave blank to use defaults.', 'agentos'); ?></p>
-        <?php foreach ($public_post_types as $pt => $obj): 
-          $map = $agent['field_maps'][$pt] ?? ['model'=>'','voice'=>'','system_prompt'=>'','user_prompt'=>''];
-          ?>
-          <fieldset style="border:1px solid #ddd;padding:12px;margin:12px 0;border-radius:8px;">
-            <legend><strong><?php echo esc_html($obj->labels->singular_name ?: $pt); ?></strong></legend>
-            <p><label><?php esc_html_e('Model Field', 'agentos'); ?> <input type="text" name="agent[field_maps][<?php echo esc_attr($pt); ?>][model]" value="<?php echo esc_attr($map['model'] ?? ''); ?>" class="regular-text"></label></p>
-            <p><label><?php esc_html_e('Voice Field', 'agentos'); ?> <input type="text" name="agent[field_maps][<?php echo esc_attr($pt); ?>][voice]" value="<?php echo esc_attr($map['voice'] ?? ''); ?>" class="regular-text"></label></p>
-            <p><label><?php esc_html_e('System Prompt Field', 'agentos'); ?> <input type="text" name="agent[field_maps][<?php echo esc_attr($pt); ?>][system_prompt]" value="<?php echo esc_attr($map['system_prompt'] ?? ''); ?>" class="regular-text"></label></p>
-            <p><label><?php esc_html_e('User Prompt Field', 'agentos'); ?> <input type="text" name="agent[field_maps][<?php echo esc_attr($pt); ?>][user_prompt]" value="<?php echo esc_attr($map['user_prompt'] ?? ''); ?>" class="regular-text"></label></p>
-          </fieldset>
-        <?php endforeach; ?>
+        <p><?php esc_html_e('Choose an ACF field or enter a custom meta key for each mapping. Leave empty to fall back to the defaults above.', 'agentos'); ?></p>
+        <div id="agentos-field-mappings" data-field-map-target></div>
+        <noscript>
+          <p><em><?php esc_html_e('Enable JavaScript in your browser to configure field mappings.', 'agentos'); ?></em></p>
+        </noscript>
 
         <?php submit_button($is_edit ? __('Update Agent', 'agentos') : __('Create Agent', 'agentos')); ?>
       </form>
     </div>
     <?php
+  }
+
+  private function collect_available_fields($post_types) {
+    $fields = [];
+    foreach ($post_types as $slug => $obj) {
+      $fields[$slug] = [];
+    }
+
+    if (!function_exists('acf_get_field_groups') || !function_exists('acf_get_fields')) {
+      return $fields;
+    }
+
+    foreach ($post_types as $slug => $obj) {
+      $groups = acf_get_field_groups(['post_type' => $slug]);
+      if (empty($groups)) {
+        continue;
+      }
+      $list = [];
+      $seen = [];
+      foreach ($groups as $group) {
+        $group_fields = acf_get_fields($group);
+        $this->flatten_acf_fields($group_fields, $list, $seen);
+      }
+      $fields[$slug] = array_values($list);
+    }
+
+    return $fields;
+  }
+
+  private function flatten_acf_fields($fields, &$list, &$seen) {
+    if (empty($fields) || !is_array($fields)) {
+      return;
+    }
+    foreach ($fields as $field) {
+      if (!is_array($field)) {
+        continue;
+      }
+      $name = $field['name'] ?? '';
+      $label = $field['label'] ?? $name;
+      if ($name && !isset($seen[$name])) {
+        $list[] = [
+          'key' => $name,
+          'label' => $label ?: $name,
+        ];
+        $seen[$name] = true;
+      }
+      if (!empty($field['sub_fields'])) {
+        $this->flatten_acf_fields($field['sub_fields'], $list, $seen);
+      }
+      if (!empty($field['layouts']) && is_array($field['layouts'])) {
+        foreach ($field['layouts'] as $layout) {
+          if (!empty($layout['sub_fields'])) {
+            $this->flatten_acf_fields($layout['sub_fields'], $list, $seen);
+          }
+        }
+      }
+    }
   }
 
   private function blank_agent() {
@@ -445,8 +568,15 @@ class AgentOS_Plugin {
   /* -----------------------------
    * Assets & Shortcode
    * --------------------------- */
+  public function enqueue_admin_assets($hook) {
+    if (strpos($hook, self::SLUG) === false) {
+      return;
+    }
+    wp_register_script('agentos-admin', plugins_url('assets/agentos-admin.js', __FILE__), ['jquery'], self::VERSION, true);
+  }
+
   public function register_assets() {
-    wp_register_script('agentos-embed', plugins_url('assets/agentos-embed.js', __FILE__), [], '0.2.0', true);
+    wp_register_script('agentos-embed', plugins_url('assets/agentos-embed.js', __FILE__), [], self::VERSION, true);
   }
 
   public function register_shortcodes() {
@@ -495,6 +625,7 @@ class AgentOS_Plugin {
       'nonce' => wp_create_nonce('wp_rest'),
       'post_id' => $post_id,
       'context_params' => $settings['context_params'] ?? [],
+      'logging' => !empty($settings['enable_logging']),
     ];
 
     $config_attr = esc_attr(wp_json_encode($config));
@@ -717,7 +848,7 @@ class AgentOS_Plugin {
     global $wpdb;
     $table = $wpdb->prefix . 'agentos_transcripts';
     $charset = $wpdb->get_charset_collate();
-    $sql = "CREATE TABLE IF NOT EXISTS $table (
+    $sql = "CREATE TABLE $table (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
       post_id BIGINT UNSIGNED NOT NULL,
       agent_id VARCHAR(64) NOT NULL DEFAULT '',
@@ -725,6 +856,7 @@ class AgentOS_Plugin {
       anon_id VARCHAR(64) DEFAULT '',
       model VARCHAR(128) DEFAULT '',
       voice VARCHAR(64) DEFAULT '',
+      user_email VARCHAR(190) DEFAULT '',
       user_agent TEXT,
       transcript LONGTEXT,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -739,6 +871,7 @@ class AgentOS_Plugin {
   public function route_transcript_save(WP_REST_Request $req) {
     global $wpdb;
     $table = $wpdb->prefix . 'agentos_transcripts';
+    $this->maybe_create_transcript_table();
 
     $post_id    = intval($req->get_param('post_id') ?: 0);
     $agent_id   = sanitize_key($req->get_param('agent_id') ?: '');
@@ -748,6 +881,11 @@ class AgentOS_Plugin {
     $voice      = sanitize_text_field($req->get_param('voice') ?: '');
     $ua         = $req->get_param('user_agent') ?: '';
     $transcript = $req->get_param('transcript');
+    $current_user = wp_get_current_user();
+    $user_email = '';
+    if ($current_user && $current_user instanceof WP_User && $current_user->exists()) {
+      $user_email = sanitize_email($current_user->user_email);
+    }
 
     if (!$post_id || !$session_id || !$agent_id || !is_array($transcript)) {
       return new WP_Error('bad_payload', __('Missing fields', 'agentos'), ['status'=>400]);
@@ -759,12 +897,14 @@ class AgentOS_Plugin {
       'anon_id' => $anon_id,
       'model' => $model,
       'voice' => $voice,
+      'user_email' => $user_email,
       'user_agent' => maybe_serialize($ua),
       'transcript' => wp_json_encode($transcript),
       'created_at' => current_time('mysql'),
     ]);
     if (!$ok) {
-      return new WP_Error('db_insert', __('Database insert failed', 'agentos'), ['status'=>500]);
+      $reason = $wpdb->last_error ? sanitize_text_field($wpdb->last_error) : __('Database insert failed', 'agentos');
+      return new WP_Error('db_insert', $reason, ['status'=>500]);
     }
 
     return ['id' => intval($wpdb->insert_id)];

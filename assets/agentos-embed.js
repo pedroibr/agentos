@@ -1,8 +1,32 @@
 (function(){
-  const $ = (root, sel) => root.querySelector(sel);
+  const $ = (selOrRoot, maybeRoot) => {
+    if (typeof selOrRoot === 'string') {
+      const ctx = maybeRoot && typeof maybeRoot.querySelector === 'function' ? maybeRoot : document;
+      return ctx ? ctx.querySelector(selOrRoot) : null;
+    }
+    if (selOrRoot && typeof selOrRoot.querySelector === 'function') {
+      return selOrRoot.querySelector(maybeRoot);
+    }
+    return null;
+  };
 
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
   function uuidv4(){ return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>((crypto.getRandomValues(new Uint8Array(1))[0]&15)^(c==='x'?0:8)).toString(16)); }
+  const LOG_PREFIX = '[AgentOS]';
+  function createLogger(enabled){
+    const safe = (method) => (...args) => {
+      if (!enabled) return;
+      try {
+        const fn = console[method] || console.log;
+        fn.call(console, LOG_PREFIX, ...args);
+      } catch (_) {}
+    };
+    return {
+      info: safe('info'),
+      error: safe('error'),
+      debug: safe('debug'),
+    };
+  }
 
   function getCtxFromURL(allowed) {
     const u = new URL(window.location.href);
@@ -28,6 +52,8 @@
     const postId = cfg.post_id || null;
     const agentId = cfg.agent_id || '';
     const contextParams = Array.isArray(cfg.context_params) ? cfg.context_params : [];
+    const loggingEnabled = !!cfg.logging;
+    const { info: logInfo, error: logError, debug: logDebug } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
       return;
@@ -113,8 +139,15 @@
           ctx: getCtxFromURL(contextParams)
         })
       });
-      if (!res.ok) throw new Error('Token request failed');
-      return res.json();
+      if (!res.ok) {
+        let payload = '';
+        try { payload = await res.text(); } catch (_){}
+        logError('Token request failed', res.status, payload);
+        throw new Error(`Token request failed (${res.status})`);
+      }
+      const json = await res.json();
+      logDebug('Token payload', json);
+      return json;
     }
 
     function waitForOpen(channel, timeoutMs = 7000) {
@@ -178,6 +211,7 @@
     // main connect
     els.start.addEventListener('click', async () => {
       try {
+        logInfo('Start clicked', { agentId, postId, mode });
         els.start.disabled = true; els.save.disabled = true;
         activeModel = ''; activeVoice = '';
         window._agentosModel = ''; window._agentosVoice = '';
@@ -203,9 +237,13 @@
         pc = new RTCPeerConnection();
         pc.ontrack = (e) => { els.audio.srcObject = e.streams[0]; };
         if (mode !== 'text') micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
+        pc.onconnectionstatechange = () => logInfo('Peer connection state', pc.connectionState);
+        pc.oniceconnectionstatechange = () => logDebug('ICE connection state', pc.iceConnectionState);
 
         dc = pc.createDataChannel('oai-events');
-        dc.onmessage = (e) => { try{ handleRealtimeEvent(JSON.parse(e.data)); }catch{} };
+        dc.onmessage = (e) => { try{ handleRealtimeEvent(JSON.parse(e.data)); }catch(err){ logError('Failed to parse realtime event', err); } };
+        dc.onopen = () => logInfo('Data channel open');
+        dc.onclose = () => logInfo('Data channel closed');
 
         const offer = await pc.createOffer({ offerToReceiveAudio: (mode!=='text')?1:0, offerToReceiveVideo: 0 });
         await pc.setLocalDescription(offer);
@@ -239,9 +277,10 @@
         els.stop.disabled = false; els.save.disabled = true;
         // Enable save after some content arrives
         setTimeout(()=>{ els.save.disabled = false; }, 1500);
+        logInfo('Session ready', { model: activeModel, voice: activeVoice });
 
       } catch (e) {
-        console.error(e);
+        logError('Start failed', e);
         setStatus('Error: '+e.message);
         els.start.disabled = false;
         stopUserSTT();
@@ -285,8 +324,8 @@
         if (!res.ok) throw new Error(data?.message || 'Save failed');
         setStatus('Transcript saved (id '+data.id+')');
       } catch (e) {
-        console.error(e);
-        setStatus('Save error');
+        logError('Save failed', e);
+        setStatus('Save error: ' + (e && e.message ? e.message : ''));
       }
     });
   });
