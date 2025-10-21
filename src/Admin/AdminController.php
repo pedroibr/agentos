@@ -2,21 +2,32 @@
 
 namespace AgentOS\Admin;
 
+use AgentOS\Analysis\Analyzer;
 use AgentOS\Core\AgentRepository;
 use AgentOS\Core\Config;
 use AgentOS\Core\Settings;
+use AgentOS\Database\TranscriptRepository;
 
 class AdminController
 {
     private Settings $settings;
     private AgentRepository $agents;
     private View $view;
+    private TranscriptRepository $transcripts;
+    private Analyzer $analyzer;
 
-    public function __construct(Settings $settings, AgentRepository $agents, View $view)
-    {
+    public function __construct(
+        Settings $settings,
+        AgentRepository $agents,
+        View $view,
+        TranscriptRepository $transcripts,
+        Analyzer $analyzer
+    ) {
         $this->settings = $settings;
         $this->agents = $agents;
         $this->view = $view;
+        $this->transcripts = $transcripts;
+        $this->analyzer = $analyzer;
     }
 
     public function registerMenu(): void
@@ -40,6 +51,15 @@ class AdminController
             $capability,
             'agentos',
             [$this, 'renderAgentsPage']
+        );
+
+        add_submenu_page(
+            'agentos',
+            __('Sessions', 'agentos'),
+            __('Sessions', 'agentos'),
+            $capability,
+            'agentos-sessions',
+            [$this, 'renderSessionsPage']
         );
 
         add_submenu_page(
@@ -136,6 +156,109 @@ class AdminController
         wp_safe_redirect(
             add_query_arg(
                 ['page' => 'agentos', 'message' => 'deleted'],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function renderSessionsPage(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $action = isset($_GET['action']) ? sanitize_key($_GET['action']) : '';
+        $message = isset($_GET['message']) ? sanitize_key($_GET['message']) : '';
+
+        if ($action === 'view') {
+            $id = isset($_GET['transcript']) ? intval($_GET['transcript']) : 0;
+            $transcript = $id ? $this->transcripts->find($id) : null;
+
+            if (!$transcript) {
+                printf('<div class="notice notice-error"><p>%s</p></div>', esc_html__('Transcript not found.', 'agentos'));
+                $this->renderSessionsList($message);
+                return;
+            }
+
+            $post = get_post($transcript['post_id']);
+            $agent = $this->agents->get($transcript['agent_id']);
+
+            $this->view->render('admin/session-detail', [
+                'transcript' => $transcript,
+                'post' => $post ?: null,
+                'agent' => $agent,
+                'message' => $message,
+            ]);
+            return;
+        }
+
+        $this->renderSessionsList($message);
+    }
+
+    private function renderSessionsList(string $message = ''): void
+    {
+        $filters = [
+            'agent_id' => isset($_GET['agent']) ? sanitize_key($_GET['agent']) : '',
+            'status' => isset($_GET['status']) ? sanitize_key($_GET['status']) : '',
+            'user_email' => isset($_GET['user_email']) ? sanitize_email($_GET['user_email']) : '',
+            'post_id' => isset($_GET['post_id']) ? intval($_GET['post_id']) : 0,
+        ];
+
+        $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 20;
+        if ($limit < 1 || $limit > 200) {
+            $limit = 20;
+        }
+
+        $transcripts = $this->transcripts->query($filters, $limit);
+
+        $this->view->render('admin/sessions-list', [
+            'transcripts' => $transcripts,
+            'agents' => $this->agents->all(),
+            'filters' => $filters,
+            'limit' => $limit,
+            'message' => $message,
+        ]);
+    }
+
+    public function handleAnalysisRequest(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_run_analysis');
+
+        $transcriptId = isset($_POST['transcript_id']) ? intval($_POST['transcript_id']) : 0;
+        if (!$transcriptId) {
+            wp_safe_redirect(
+                add_query_arg(
+                    ['page' => 'agentos-sessions', 'message' => 'missing'],
+                    admin_url('admin.php')
+                )
+            );
+            exit;
+        }
+
+        $customPrompt = isset($_POST['custom_prompt']) ? wp_kses_post(wp_unslash($_POST['custom_prompt'])) : '';
+        $customModel = isset($_POST['custom_model']) ? sanitize_text_field($_POST['custom_model']) : '';
+
+        $success = $this->analyzer->enqueue($transcriptId, [
+            'custom_prompt' => $customPrompt,
+            'model' => $customModel,
+            'force' => true,
+        ]);
+
+        $message = $success ? 'analysis_queued' : 'analysis_failed';
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page' => 'agentos-sessions',
+                    'action' => 'view',
+                    'transcript' => $transcriptId,
+                    'message' => $message,
+                ],
                 admin_url('admin.php')
             )
         );

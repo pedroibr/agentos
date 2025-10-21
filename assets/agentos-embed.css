@@ -225,6 +225,57 @@
   gap: 10px;
 }
 
+.agentos-history {
+  margin-top: 24px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 18px 20px;
+  background: linear-gradient(180deg, #fff, #f8f9ff);
+}
+
+.agentos-history__title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--agentos-text);
+}
+
+.agentos-history__content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.agentos-history__item {
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.agentos-history__item:first-child {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.agentos-history__meta {
+  font-size: 0.85rem;
+  color: var(--agentos-text-muted);
+  margin-bottom: 6px;
+}
+
+.agentos-history__feedback {
+  white-space: pre-wrap;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--agentos-text);
+}
+
+.agentos-history__placeholder {
+  color: var(--agentos-text-muted);
+  margin: 0;
+}
+
 .agentos-transcript-log::after {
   content: "";
   position: sticky;

@@ -16,6 +16,10 @@ class AgentRepository
             'post_types' => [],
             'field_maps' => [],
             'show_transcript' => true,
+            'analysis_enabled' => false,
+            'analysis_model' => '',
+            'analysis_system_prompt' => '',
+            'analysis_auto_run' => false,
         ];
     }
 
@@ -117,6 +121,11 @@ class AgentRepository
 
         $agent['show_transcript'] = !empty($input['show_transcript']);
 
+        $agent['analysis_enabled'] = !empty($input['analysis_enabled']);
+        $agent['analysis_auto_run'] = !empty($input['analysis_auto_run']);
+        $agent['analysis_model'] = sanitize_text_field($input['analysis_model'] ?? '');
+        $agent['analysis_system_prompt'] = sanitize_textarea_field($input['analysis_system_prompt'] ?? '');
+
         $publicPostTypes = get_post_types(['public' => true], 'names');
         $requested = array_map('sanitize_text_field', (array) ($input['post_types'] ?? []));
         $agent['post_types'] = array_values(array_intersect($requested, $publicPostTypes));
@@ -164,6 +173,10 @@ class AgentRepository
             'user_prompt' => sanitize_textarea_field($userPrompt),
             'mode' => $agent['default_mode'] ?? 'voice',
             'show_transcript' => !empty($agent['show_transcript']),
+            'analysis_enabled' => !empty($agent['analysis_enabled']),
+            'analysis_model' => sanitize_text_field($agent['analysis_model'] ?? ''),
+            'analysis_system_prompt' => sanitize_textarea_field($agent['analysis_system_prompt'] ?? ''),
+            'analysis_auto_run' => !empty($agent['analysis_auto_run']),
         ];
     }
 

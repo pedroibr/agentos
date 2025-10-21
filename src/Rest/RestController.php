@@ -2,6 +2,7 @@
 
 namespace AgentOS\Rest;
 
+use AgentOS\Analysis\Analyzer;
 use AgentOS\Core\AgentRepository;
 use AgentOS\Core\Config;
 use AgentOS\Core\Settings;
@@ -15,12 +16,14 @@ class RestController
     private Settings $settings;
     private AgentRepository $agents;
     private TranscriptRepository $transcripts;
+    private Analyzer $analyzer;
 
-    public function __construct(Settings $settings, AgentRepository $agents, TranscriptRepository $transcripts)
+    public function __construct(Settings $settings, AgentRepository $agents, TranscriptRepository $transcripts, Analyzer $analyzer)
     {
         $this->settings = $settings;
         $this->agents = $agents;
         $this->transcripts = $transcripts;
+        $this->analyzer = $analyzer;
     }
 
     public function registerRoutes(): void
@@ -83,17 +86,40 @@ class RestController
             );
         }
 
-        if (!current_user_can('manage_options')) {
+        if (current_user_can('manage_options')) {
+            return true;
+        }
+
+        $anonId = sanitize_text_field($request->get_param('anon_id') ?? '');
+        $requestedEmail = sanitize_email($request->get_param('user_email') ?? '');
+        $currentUser = wp_get_current_user();
+        $currentEmail = ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) ? sanitize_email($currentUser->user_email) : '';
+
+        if ($anonId) {
+            return true;
+        }
+
+        if ($currentEmail) {
+            return true;
+        }
+
+        if ($requestedEmail) {
             return new WP_Error(
                 'rest_forbidden',
-                __('You do not have permission to view transcripts.', 'agentos'),
+                __('You do not have permission to view transcripts for that user.', 'agentos'),
                 [
                     'status' => 403,
                 ]
             );
         }
 
-        return true;
+        return new WP_Error(
+            'rest_forbidden',
+            __('You do not have permission to view transcripts.', 'agentos'),
+            [
+                'status' => 403,
+            ]
+        );
     }
 
     public function routeRealtimeToken(WP_REST_Request $request)
@@ -216,6 +242,15 @@ class RestController
             return new WP_Error('bad_payload', __('Missing fields', 'agentos'), ['status' => 400]);
         }
 
+        $agent = $this->agents->get($agentId);
+        if (!$agent) {
+            return new WP_Error('invalid_agent', __('Agent not found', 'agentos'), ['status' => 404]);
+        }
+
+        $analysisEnabled = !empty($agent['analysis_enabled']);
+        $analysisAuto = !empty($agent['analysis_auto_run']);
+        $analysisModel = sanitize_text_field($agent['analysis_model'] ?? '');
+
         $id = $this->transcripts->insert([
             'post_id' => $postId,
             'agent_id' => $agentId,
@@ -226,12 +261,17 @@ class RestController
             'user_email' => $userEmail,
             'user_agent' => maybe_serialize($userAgent),
             'transcript' => $transcript,
+            'analysis_model' => $analysisModel,
         ]);
 
         if (!$id) {
             global $wpdb;
             $reason = $wpdb->last_error ? sanitize_text_field($wpdb->last_error) : __('Database insert failed', 'agentos');
             return new WP_Error('db_insert', $reason, ['status' => 500]);
+        }
+
+        if ($analysisEnabled && $analysisAuto) {
+            $this->analyzer->enqueue($id);
         }
 
         return ['id' => $id];
@@ -242,12 +282,48 @@ class RestController
         $postId = intval($request->get_param('post_id') ?: 0);
         $agentId = sanitize_key($request->get_param('agent_id') ?: '');
         $limit = min(100, max(1, intval($request->get_param('limit') ?: 10)));
+        $status = sanitize_key($request->get_param('status') ?: '');
+        $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
+        $requestedEmail = sanitize_email($request->get_param('user_email') ?: '');
 
         if (!$postId) {
             return new WP_Error('no_post', __('post_id required', 'agentos'), ['status' => 400]);
         }
 
-        return $this->transcripts->list($postId, $agentId, $limit);
+        $filters = [];
+
+        if ($status) {
+            $filters['status'] = $status;
+        }
+
+        if ($anonId) {
+            $filters['anon_id'] = $anonId;
+        }
+
+        if (current_user_can('manage_options')) {
+            if ($requestedEmail) {
+                $filters['user_email'] = $requestedEmail;
+            }
+        } else {
+            $currentUser = wp_get_current_user();
+            if ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) {
+                $filters['user_email'] = sanitize_email($currentUser->user_email);
+            } elseif ($requestedEmail) {
+                // Non-admins cannot request arbitrary emails.
+                return new WP_Error('rest_forbidden', __('Email filter not permitted.', 'agentos'), ['status' => 403]);
+            }
+        }
+
+        $rows = $this->transcripts->list($postId, $agentId, $limit, $filters);
+
+        if (current_user_can('manage_options')) {
+            return $rows;
+        }
+
+        return array_map(static function ($row) {
+            unset($row['user_email'], $row['user_agent'], $row['analysis_prompt']);
+            return $row;
+        }, $rows);
     }
 
     private function checkNonce(WP_REST_Request $request): bool

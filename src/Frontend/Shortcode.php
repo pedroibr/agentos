@@ -81,6 +81,7 @@ class Shortcode
             'context_params' => $settings['context_params'] ?? [],
             'logging' => !empty($settings['enable_logging']),
             'show_transcript' => !empty($agent['show_transcript']),
+            'analysis_enabled' => !empty($agent['analysis_enabled']),
         ];
 
         $template = $this->templateDir . '/frontend/shortcode.php';

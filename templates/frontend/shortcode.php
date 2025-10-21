@@ -59,4 +59,12 @@
       </div>
     <?php endif; ?>
   </div>
+  <?php if (!empty($agentData['analysis_enabled'])) : ?>
+    <div class="agentos-history" aria-live="polite">
+      <h3 class="agentos-history__title"><?php esc_html_e('Previous feedback', 'agentos'); ?></h3>
+      <div class="agentos-history__content">
+        <p class="agentos-history__placeholder"><?php esc_html_e('Save a session to see feedback summaries here.', 'agentos'); ?></p>
+      </div>
+    </div>
+  <?php endif; ?>
 </div>

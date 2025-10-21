@@ -14,6 +14,12 @@
    - Allowed post types.
    - Per-post-type field mappings (model, voice, system prompt, user prompt).
    - **Display transcript panel** toggle (hides the live transcript UI + save button when unchecked).
+   - **Analysis controls** (v0.6.0+): enable/disable AI transcript analysis, choose a default analysis model/system prompt, optionally auto-run analysis whenever a transcript is saved. The system prompt is passed verbatim (or overridden per run), and the transcript becomes the sole user message, giving you complete control over the response format.
+
+3. Review transcripts under **AgentOS → Sessions**:
+   - Filter by post, agent, user email, and analysis status.
+   - Open any row to inspect the raw transcript, current feedback, timestamps, and error logs.
+   - Re-run analysis on demand with a custom prompt/model override; jobs are scheduled asynchronously via WordPress cron.
 
 ## Front-End Integration
 - Shortcode: `[agentos id="agent-slug"]` with optional `mode="text|both"` and `height="60vh"` overrides.
@@ -21,6 +27,7 @@
   1. **Toolbar** (`.agentos-toolbar` / `.agentos-bar`) – start, stop, and (if enabled) save transcript buttons plus a live status pill.
   2. **Composer** (`.agentos-text-ui`) – hidden by default unless mode is text/both; JS toggles the `is-visible` class.
   3. **Transcript** (`.agentos-transcript`) – conditionally rendered when the agent allows transcripts.
+  4. **Feedback history** (`.agentos-history`) – visible when analysis is enabled; automatically displays recent session feedback once analyses complete.
 
 ## Design System Notes
 - Styles live in `assets/agentos-embed.css`. `.agentos-wrap` exposes CSS custom properties:

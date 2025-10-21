@@ -67,6 +67,39 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
         </td>
       </tr>
       <tr>
+        <th scope="row"><?php esc_html_e('Enable analysis', 'agentos'); ?></th>
+        <td>
+          <label>
+            <input type="checkbox" name="agent[analysis_enabled]" value="1" <?php checked(!empty($agent['analysis_enabled'])); ?>>
+            <?php esc_html_e('Allow this agent to run post-session AI analysis.', 'agentos'); ?>
+          </label>
+          <p class="description"><?php esc_html_e('When enabled, admins can trigger transcript analysis from the Sessions screen.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><label for="agentos-analysis-model"><?php esc_html_e('Analysis model', 'agentos'); ?></label></th>
+        <td>
+          <input type="text" id="agentos-analysis-model" name="agent[analysis_model]" value="<?php echo esc_attr($agent['analysis_model']); ?>" class="regular-text">
+          <p class="description"><?php esc_html_e('OpenAI model used for transcript analysis (e.g. gpt-4.1-mini). Leave blank to use the default.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><label for="agentos-analysis-prompt"><?php esc_html_e('Analysis system prompt', 'agentos'); ?></label></th>
+        <td>
+          <textarea id="agentos-analysis-prompt" name="agent[analysis_system_prompt]" rows="5" class="large-text"><?php echo esc_textarea($agent['analysis_system_prompt']); ?></textarea>
+          <p class="description"><?php esc_html_e('Base instructions sent to the analysis model. You can override or extend this per session when re-running an analysis.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><?php esc_html_e('Auto-run analysis', 'agentos'); ?></th>
+        <td>
+          <label>
+            <input type="checkbox" name="agent[analysis_auto_run]" value="1" <?php checked(!empty($agent['analysis_auto_run'])); ?>>
+            <?php esc_html_e('Queue an analysis automatically after each transcript is saved.', 'agentos'); ?>
+          </label>
+        </td>
+      </tr>
+      <tr>
         <th scope="row"><label for="agentos-post-types"><?php esc_html_e('Allowed Post Types', 'agentos'); ?></label></th>
         <td>
           <select id="agentos-post-types" name="agent[post_types][]" multiple size="5" style="min-width:260px;">

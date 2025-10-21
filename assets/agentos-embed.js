@@ -55,6 +55,7 @@
     const contextParams = Array.isArray(cfg.context_params) ? cfg.context_params : [];
     const loggingEnabled = !!cfg.logging;
     const transcriptEnabled = transcriptAttr !== '0' && transcriptAttr !== 'false' && cfg.show_transcript !== false;
+    const analysisEnabled = !!cfg.analysis_enabled;
     const { info: logInfo, error: logError, debug: logDebug } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
@@ -74,6 +75,11 @@
       panel: $('.agentos-transcript', wrap)
     };
     const canRenderTranscript = transcriptEnabled && !!els.log && !!els.panel;
+    const historyUI = {
+      container: $('.agentos-history__content', wrap),
+      placeholder: $('.agentos-history__placeholder', wrap)
+    };
+    const historyPlaceholderDefault = historyUI.placeholder ? historyUI.placeholder.textContent : '';
 
     const modeAttr = wrap.getAttribute('data-mode');
     const mode = modeAttr || cfg.mode || 'voice'; // voice | text | both
@@ -84,6 +90,9 @@
     let pc, micStream, dc, SESSION_ID=null;
     let activeModel = '', activeVoice = '';
     const transcript = []; // [{role,text}]
+    const historyState = {
+      loading: false
+    };
 
     function setStatus(t){
       if (!els.status) return;
@@ -358,11 +367,104 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data?.message || 'Save failed');
         setStatus('Transcript saved (id '+data.id+')');
+        if (analysisEnabled) loadHistory();
       } catch (e) {
         logError('Save failed', e);
         setStatus('Save error: ' + (e && e.message ? e.message : ''));
       }
     });
+
+    const statusLabels = {
+      queued: 'Queued',
+      running: 'Running',
+      succeeded: 'Completed',
+      failed: 'Failed',
+      idle: 'Idle'
+    };
+
+    function renderHistory(items) {
+      if (!historyUI.container) return;
+      historyUI.container.innerHTML = '';
+
+      if (!Array.isArray(items) || items.length === 0) {
+        if (historyUI.placeholder) {
+          historyUI.placeholder.textContent = historyPlaceholderDefault || 'Save a session to see feedback summaries here.';
+          historyUI.placeholder.style.display = '';
+        }
+        return;
+      }
+
+      if (historyUI.placeholder) {
+        historyUI.placeholder.style.display = 'none';
+      }
+
+      items.forEach(item => {
+        const block = document.createElement('div');
+        block.className = 'agentos-history__item';
+
+        const meta = document.createElement('div');
+        meta.className = 'agentos-history__meta';
+        const bits = [];
+        if (item.created_at) bits.push('Saved ' + item.created_at);
+        const status = item.analysis_status || 'idle';
+        if (status === 'succeeded' && item.analysis_completed_at) {
+          bits.push('Analyzed ' + item.analysis_completed_at);
+        } else {
+          bits.push(statusLabels[status] || status);
+        }
+        meta.textContent = bits.join(' · ');
+        block.appendChild(meta);
+
+        const feedback = document.createElement('div');
+        feedback.className = 'agentos-history__feedback';
+        if (item.analysis_feedback) {
+          feedback.textContent = item.analysis_feedback;
+        } else if (status === 'failed' && item.analysis_error) {
+          feedback.textContent = 'Analysis failed: ' + item.analysis_error;
+        } else if (status === 'queued' || status === 'running') {
+          feedback.textContent = 'Analysis in progress…';
+        } else {
+          feedback.textContent = 'Analysis not requested yet.';
+        }
+        block.appendChild(feedback);
+
+        historyUI.container.appendChild(block);
+      });
+    }
+
+    async function loadHistory() {
+      if (!analysisEnabled || !historyUI.container || historyState.loading) return;
+      historyState.loading = true;
+      try {
+        const params = new URLSearchParams({
+          post_id: String(postId),
+          agent_id: agentId,
+          limit: '5',
+          anon_id: getAnonId()
+        });
+        const res = await fetch(restBase + '/transcript-db?' + params.toString(), {
+          method: 'GET',
+          headers: {'X-WP-Nonce': nonce}
+        });
+        if (!res.ok) {
+          throw new Error('History request failed (' + res.status + ')');
+        }
+        const json = await res.json();
+        renderHistory(json);
+      } catch (err) {
+        logError('History load failed', err);
+        if (historyUI.placeholder) {
+          historyUI.placeholder.textContent = historyPlaceholderDefault || 'Unable to load previous feedback right now.';
+          historyUI.placeholder.style.display = '';
+        }
+      } finally {
+        historyState.loading = false;
+      }
+    }
+
+    if (analysisEnabled) {
+      loadHistory();
+    }
   });
 
 })();

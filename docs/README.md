@@ -16,8 +16,9 @@
 
 ## Admin UX
 
-- **AgentOS → Settings**: choose the API key source (ENV, PHP constant, or manual) and configure allowed context query parameters.
-- **AgentOS → Agents**: create any number of agents, set their default model/voice/mode, choose which post types they run on, map ACF/meta fields for model, voice, system prompt, and user prompt, and toggle whether the live transcript block appears on the front end.
+- **AgentOS → Settings**: choose the API key source (ENV, PHP constant, or manual), configure allowed context query parameters, and enable optional debug logging.
+- **AgentOS → Agents**: create any number of agents, set their default model/voice/mode, choose which post types they run on, map ACF/meta fields for model, voice, system prompt, and user prompt, toggle the live transcript block, and now opt into post-session analysis by supplying a default model + system prompt (with an auto-run option).
+- **AgentOS → Sessions** *(new in v0.6.0)*: browse saved transcripts, filter by agent/post/status/email, inspect individual sessions (transcript + analysis feedback), and queue/re-run AI analysis with optional per-run prompt/model overrides.
 
 ## Shortcode
 
@@ -34,9 +35,11 @@ Context params (from Settings) continue to pass URL values through to the genera
 
 ## REST Endpoints
 
-- POST `/wp-json/agentos/v1/realtime-token` (requires `post_id` + `agent_id`)
-- POST `/wp-json/agentos/v1/transcript-db` (requires `post_id` + `agent_id`)
-- GET `/wp-json/agentos/v1/transcript-db?post_id=...&agent_id=...`
+- POST `/wp-json/agentos/v1/realtime-token` (requires `post_id` + `agent_id`).
+- POST `/wp-json/agentos/v1/transcript-db` (requires `post_id`, `agent_id`, `session_id`, transcript payload). When the owning agent has analysis auto-run enabled, the transcript is queued for background analysis automatically.
+- GET `/wp-json/agentos/v1/transcript-db?post_id=...&agent_id=...` supports optional filters: `limit`, `status` (`queued|running|succeeded|failed|idle`), `anon_id`, and (admin-only) `user_email`. Non-admin requests have email/user-agent details stripped from the response.
+
+Admin-only endpoints to fetch a single transcript or trigger analysis live inside the WordPress dashboard and reuse the same repository layer.
 
 ## Development Workflow
 
