@@ -49,7 +49,7 @@ $defaultSubscription = '';
         <th scope="row"><label for="agentos-user-email"><?php esc_html_e('Email', 'agentos'); ?></label></th>
         <td>
           <input type="email" id="agentos-user-email" name="user[email]" class="regular-text" value="<?php echo esc_attr($meta['email']); ?>" required>
-          <p class="description"><?php esc_html_e('If the email matches an existing WordPress user, the account will be linked automatically.', 'agentos'); ?></p>
+          <p class="description"><?php esc_html_e('Enter the email of an existing WordPress user. The user will be linked automatically.', 'agentos'); ?></p>
         </td>
       </tr>
       <tr>

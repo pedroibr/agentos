@@ -40,6 +40,8 @@ $addUrl = add_query_arg(
     <div class="notice notice-success is-dismissible"><p><?php esc_html_e('User deleted.', 'agentos'); ?></p></div>
   <?php elseif ($message === 'user_invalid') : ?>
     <div class="notice notice-error is-dismissible"><p><?php esc_html_e('Please provide a valid email address.', 'agentos'); ?></p></div>
+  <?php elseif ($message === 'user_missing') : ?>
+    <div class="notice notice-error is-dismissible"><p><?php esc_html_e('WordPress user not found for that email. Please create the account first.', 'agentos'); ?></p></div>
   <?php endif; ?>
 
   <form method="get" class="search-form wp-clearfix" style="margin-bottom:20px;">

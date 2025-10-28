@@ -36,6 +36,18 @@ class UsageLimiter
         $agentSessionCap = isset($agent['session_token_cap']) ? (int) $agent['session_token_cap'] : 0;
 
         $plans = $this->subscriptions->all();
+
+        if ($requireSubscription && $userKey === '') {
+            return [
+                'allowed' => false,
+                'error_code' => 'login_required',
+                'reason' => 'missing_identity',
+                'message' => __('You must be logged in to use this agent.', 'agentos'),
+                'status' => 401,
+                'warnings' => [],
+            ];
+        }
+
         $assignments = $userKey !== '' ? $this->userSubscriptions->get($userKey) : [];
 
         $best = null;
