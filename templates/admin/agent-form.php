@@ -67,6 +67,23 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
         </td>
       </tr>
       <tr>
+        <th scope="row"><?php esc_html_e('Require subscription', 'agentos'); ?></th>
+        <td>
+          <label>
+            <input type="checkbox" name="agent[require_subscription]" value="1" <?php checked(!empty($agent['require_subscription'])); ?>>
+            <?php esc_html_e('Only visitors with an active subscription may start this agent.', 'agentos'); ?>
+          </label>
+          <p class="description"><?php esc_html_e('Leave unchecked to allow anyone to use the agent (limits may still apply via per-session caps).', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><label for="agentos-session-cap"><?php esc_html_e('Session token cap', 'agentos'); ?></label></th>
+        <td>
+          <input type="number" id="agentos-session-cap" name="agent[session_token_cap]" value="<?php echo esc_attr((int) ($agent['session_token_cap'] ?? 0)); ?>" class="small-text" min="0">
+          <p class="description"><?php esc_html_e('Maximum tokens allowed for a single session. Set to 0 to leave uncapped.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
         <th scope="row"><?php esc_html_e('Enable analysis', 'agentos'); ?></th>
         <td>
           <label>

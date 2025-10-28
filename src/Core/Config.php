@@ -4,10 +4,13 @@ namespace AgentOS\Core;
 
 class Config
 {
-    public const VERSION = '0.6.1';
+    public const VERSION = '0.8.5';
 
     public const OPTION_SETTINGS = 'agentos_settings';
     public const OPTION_AGENTS   = 'agentos_agents';
+    public const OPTION_SUBSCRIPTIONS = 'agentos_subscriptions';
+    public const OPTION_USER_SUBSCRIPTIONS = 'agentos_user_subscriptions';
+    public const OPTION_USER_SUBSCRIPTION_META = 'agentos_user_subscription_meta';
 
     public const FALLBACK_MODEL  = 'gpt-realtime-mini-2025-10-06';
     public const FALLBACK_VOICE  = 'alloy';

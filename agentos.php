@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AgentOS – Dynamic AI Agents for WordPress
  * Description: Load customizable AI agents (text/voice) per post type. Map ACF/meta fields to agent parameters. Provides shortcodes and REST endpoints.
- * Version: 0.6.1
+ * Version: 0.8.5
  * Author: Pedro Raimundo
  * Text Domain: agentos
  */

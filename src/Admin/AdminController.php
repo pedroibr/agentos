@@ -7,6 +7,9 @@ use AgentOS\Core\AgentRepository;
 use AgentOS\Core\Config;
 use AgentOS\Core\Settings;
 use AgentOS\Database\TranscriptRepository;
+use AgentOS\Database\UsageRepository;
+use AgentOS\Subscriptions\SubscriptionRepository;
+use AgentOS\Subscriptions\UserSubscriptionRepository;
 
 class AdminController
 {
@@ -15,19 +18,28 @@ class AdminController
     private View $view;
     private TranscriptRepository $transcripts;
     private Analyzer $analyzer;
+    private SubscriptionRepository $subscriptions;
+    private UserSubscriptionRepository $userSubscriptions;
+    private UsageRepository $usage;
 
     public function __construct(
         Settings $settings,
         AgentRepository $agents,
         View $view,
         TranscriptRepository $transcripts,
-        Analyzer $analyzer
+        Analyzer $analyzer,
+        SubscriptionRepository $subscriptions,
+        UserSubscriptionRepository $userSubscriptions,
+        UsageRepository $usage
     ) {
         $this->settings = $settings;
         $this->agents = $agents;
         $this->view = $view;
         $this->transcripts = $transcripts;
         $this->analyzer = $analyzer;
+        $this->subscriptions = $subscriptions;
+        $this->userSubscriptions = $userSubscriptions;
+        $this->usage = $usage;
     }
 
     public function registerMenu(): void
@@ -51,6 +63,24 @@ class AdminController
             $capability,
             'agentos',
             [$this, 'renderAgentsPage']
+        );
+
+        add_submenu_page(
+            'agentos',
+            __('Subscriptions', 'agentos'),
+            __('Subscriptions', 'agentos'),
+            $capability,
+            'agentos-subscriptions',
+            [$this, 'renderSubscriptionsPage']
+        );
+
+        add_submenu_page(
+            'agentos',
+            __('Users', 'agentos'),
+            __('Users', 'agentos'),
+            $capability,
+            'agentos-users',
+            [$this, 'renderUsersPage']
         );
 
         add_submenu_page(
@@ -219,6 +249,438 @@ class AdminController
             'limit' => $limit,
             'message' => $message,
         ]);
+    }
+
+    public function renderSubscriptionsPage(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $action = isset($_GET['action']) ? sanitize_key($_GET['action']) : '';
+        if ($action === 'edit' || $action === 'new') {
+            $this->renderSubscriptionForm($action);
+            return;
+        }
+
+        $message = isset($_GET['message']) ? sanitize_key($_GET['message']) : '';
+        $plans = $this->subscriptions->all();
+
+        $this->view->render('admin/subscriptions-list', [
+            'plans' => $plans,
+            'agents' => $this->agents->all(),
+            'message' => $message,
+        ]);
+    }
+
+    private function renderSubscriptionForm(string $action): void
+    {
+        $isEdit = ($action === 'edit');
+        $plan = $this->subscriptions->blank();
+        $planSlug = '';
+
+        if ($isEdit) {
+            $planSlug = isset($_GET['subscription']) ? sanitize_key($_GET['subscription']) : '';
+            $existing = $planSlug ? $this->subscriptions->get($planSlug) : null;
+            if (!$existing) {
+                printf('<div class="notice notice-error"><p>%s</p></div>', esc_html__('Subscription not found.', 'agentos'));
+                return;
+            }
+            $plan = wp_parse_args($existing, $plan);
+        }
+
+        $this->view->render('admin/subscription-form', [
+            'is_edit' => $isEdit,
+            'plan' => $plan,
+            'plan_slug' => $planSlug,
+            'agents' => $this->agents->all(),
+        ]);
+    }
+
+    private function mergeUsers(array $usageUsers, array $manualUsers, string $search, int $limit): array
+    {
+        $merged = [];
+
+        foreach ($usageUsers as $row) {
+            $key = $row['user_key'];
+            $merged[$key] = [
+                'user_key' => $key,
+                'user_email' => $row['user_email'] ?? '',
+                'sessions' => (int) ($row['sessions'] ?? 0),
+                'last_activity' => $row['last_activity'] ?? '',
+                'subscriptions' => [],
+                'source' => 'usage',
+                'tokens_realtime' => (int) ($row['tokens_realtime'] ?? 0),
+                'tokens_text' => (int) ($row['tokens_text'] ?? 0),
+                'tokens_total' => (int) ($row['tokens_total'] ?? 0),
+                'meta' => $this->normalizeUserMeta([]),
+            ];
+        }
+
+        foreach ($manualUsers as $key => $meta) {
+            if (!isset($merged[$key])) {
+                $merged[$key] = [
+                    'user_key' => $key,
+                    'user_email' => $meta['email'] ?? '',
+                    'sessions' => 0,
+                    'last_activity' => '',
+                    'subscriptions' => [],
+                    'source' => 'manual',
+                    'tokens_realtime' => 0,
+                    'tokens_text' => 0,
+                    'tokens_total' => 0,
+                    'meta' => $this->normalizeUserMeta([]),
+                ];
+            }
+            $merged[$key]['meta'] = $this->normalizeUserMeta($meta);
+        }
+
+        foreach ($merged as $key => &$row) {
+            $meta = $row['meta'];
+            if (!empty($meta['wp_user_id'])) {
+                $wpUser = get_user_by('id', (int) $meta['wp_user_id']);
+                if ($wpUser instanceof \WP_User) {
+                    if (empty($meta['name'])) {
+                        $meta['name'] = $wpUser->display_name ?: $wpUser->user_login;
+                    }
+                    if (empty($meta['email'])) {
+                        $meta['email'] = sanitize_email($wpUser->user_email);
+                    }
+                    $row['meta'] = $meta;
+                }
+            }
+
+            if (empty($row['user_email']) && !empty($meta['email'])) {
+                $row['user_email'] = $meta['email'];
+            }
+        }
+        unset($row);
+
+        if ($search !== '') {
+            $needle = strtolower($search);
+            $merged = array_filter($merged, static function ($row) use ($needle) {
+                $fields = [
+                    $row['user_key'] ?? '',
+                    $row['user_email'] ?? '',
+                    $row['meta']['name'] ?? '',
+                    $row['meta']['email'] ?? '',
+                    $row['meta']['notes'] ?? '',
+                ];
+                foreach ($fields as $field) {
+                    if ($field && strpos(strtolower($field), $needle) !== false) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+        }
+
+        uasort($merged, static function ($a, $b) {
+            $aTime = !empty($a['last_activity']) ? strtotime($a['last_activity']) : 0;
+            $bTime = !empty($b['last_activity']) ? strtotime($b['last_activity']) : 0;
+            return $bTime <=> $aTime;
+        });
+
+        if ($limit > 0) {
+            $merged = array_slice($merged, 0, $limit);
+        }
+
+        return array_values($merged);
+    }
+
+    private function normalizeUserMeta(array $meta): array
+    {
+        $defaults = [
+            'name' => '',
+            'email' => '',
+            'notes' => '',
+            'wp_user_id' => 0,
+        ];
+
+        if (isset($meta['label']) && empty($meta['name'])) {
+            $meta['name'] = $meta['label'];
+        }
+
+        $meta = array_merge($defaults, array_intersect_key($meta, $defaults));
+        $meta['name'] = sanitize_text_field($meta['name']);
+        $meta['email'] = sanitize_email($meta['email']);
+        $meta['notes'] = sanitize_textarea_field($meta['notes']);
+        $meta['wp_user_id'] = (int) $meta['wp_user_id'];
+
+        return $meta;
+    }
+
+    private function findUserKeyByEmail(string $email, array $metaList): ?string
+    {
+        if ($email === '') {
+            return null;
+        }
+
+        foreach ($metaList as $key => $meta) {
+            if (empty($meta['email'])) {
+                continue;
+            }
+            if (strtolower($meta['email']) === $email) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
+
+    private function generateAnonKey(string $email, array $existingKeys): string
+    {
+        $sanitized = sanitize_key(str_replace(['@', '.'], '-', $email));
+        if (!$sanitized) {
+            $sanitized = strtolower(wp_generate_password(8, false, false));
+        }
+
+        $base = 'anon_' . substr($sanitized, 0, 20);
+        if ($base === 'anon_') {
+            $base .= strtolower(wp_generate_password(6, false, false));
+        }
+
+        $existing = array_flip($existingKeys);
+        $candidate = $base;
+        $i = 2;
+        while (isset($existing[$candidate])) {
+            $candidate = $base . '-' . $i;
+            $i++;
+        }
+
+        return $candidate;
+    }
+
+    public function handleSubscriptionSave(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_save_subscription');
+
+        $payload = isset($_POST['subscription']) ? (array) $_POST['subscription'] : [];
+        $original = isset($_POST['original_slug']) ? sanitize_key($_POST['original_slug']) : '';
+
+        $slug = $this->subscriptions->upsert($payload, $original);
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page' => 'agentos-subscriptions',
+                    'message' => 'saved',
+                    'action' => 'edit',
+                    'subscription' => $slug,
+                ],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function handleSubscriptionDelete(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_delete_subscription');
+
+        $slug = isset($_GET['subscription']) ? sanitize_key($_GET['subscription']) : '';
+        if ($slug) {
+            $this->subscriptions->delete($slug);
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                ['page' => 'agentos-subscriptions', 'message' => 'deleted'],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function renderUsersPage(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $action = isset($_GET['action']) ? sanitize_key($_GET['action']) : '';
+        if ($action === 'add' || $action === 'edit') {
+            $this->renderUserForm($action);
+            return;
+        }
+
+        if ($action === 'view') {
+            $this->renderUserDetail();
+            return;
+        }
+
+        $message = isset($_GET['message']) ? sanitize_key($_GET['message']) : '';
+        $search = isset($_GET['search']) ? sanitize_text_field(wp_unslash($_GET['search'])) : '';
+        $limit = isset($_GET['limit']) ? max(1, min(500, intval($_GET['limit']))) : 100;
+
+        $this->userSubscriptions->clearExpired();
+
+        $usageUsers = $this->usage->listUsers($limit, ['search' => $search]);
+        $manualUsers = $this->userSubscriptions->getUserMeta();
+        $assignments = $this->userSubscriptions->all();
+        $plans = $this->subscriptions->all();
+
+        $users = $this->mergeUsers($usageUsers, $manualUsers, $search, $limit);
+
+        $this->view->render('admin/users-list', [
+            'users' => $users,
+            'assignments' => $assignments,
+            'plans' => $plans,
+            'search' => $search,
+            'limit' => $limit,
+            'message' => $message,
+        ]);
+    }
+
+    private function renderUserForm(string $action): void
+    {
+        $isEdit = ($action === 'edit');
+        $plans = $this->subscriptions->all();
+        $message = isset($_GET['message']) ? sanitize_key($_GET['message']) : '';
+        $metaAll = $this->userSubscriptions->getUserMeta();
+        $assignments = $this->userSubscriptions->all();
+
+        $userKey = '';
+        $meta = $this->normalizeUserMeta([]);
+        $subscriptions = [];
+        $wpUser = null;
+
+        if ($isEdit) {
+            $userKey = isset($_GET['user']) ? sanitize_text_field($_GET['user']) : '';
+            if (!$userKey || !isset($metaAll[$userKey])) {
+                printf('<div class="notice notice-error"><p>%s</p></div>', esc_html__('User not found.', 'agentos'));
+                return;
+            }
+            $meta = $this->normalizeUserMeta($metaAll[$userKey]);
+            $subscriptions = $assignments[$userKey] ?? [];
+            if (!empty($meta['wp_user_id'])) {
+                $wpUser = get_user_by('id', (int) $meta['wp_user_id']);
+            }
+        }
+
+        $this->view->render('admin/user-form', [
+            'is_edit' => $isEdit,
+            'user_key' => $userKey,
+            'meta' => $meta,
+            'plans' => $plans,
+            'subscriptions' => $subscriptions,
+            'wp_user' => $wpUser,
+        ]);
+    }
+
+    private function renderUserDetail(): void
+    {
+        $userKey = isset($_GET['user']) ? sanitize_text_field($_GET['user']) : '';
+        if (!$userKey) {
+            printf('<div class="notice notice-error"><p>%s</p></div>', esc_html__('User key missing.', 'agentos'));
+            return;
+        }
+
+        $metaAll = $this->userSubscriptions->getUserMeta();
+        $meta = $this->normalizeUserMeta($metaAll[$userKey] ?? []);
+
+        $assignments = $this->userSubscriptions->get($userKey, true);
+        $plans = $this->subscriptions->all();
+
+        $subscriptionRows = [];
+        foreach ($assignments as $assignment) {
+            $slug = $assignment['subscription_slug'];
+            $plan = $plans[$slug] ?? null;
+            $periodHours = $plan['period_hours'] ?? 24;
+            $usage = $this->usage->summarizeUsage($slug, $userKey, $periodHours);
+            $subscriptionRows[] = [
+                'slug' => $slug,
+                'label' => $plan['label'] ?? $slug,
+                'plan' => $plan,
+                'assignment' => $assignment,
+                'usage' => $usage,
+            ];
+        }
+
+        $usageSummary = $this->usage->summarizeUsage('', $userKey, 720);
+        $usageEntries = $this->usage->listForUser($userKey, 25);
+        $transcripts = $this->transcripts->query(['user_key' => $userKey], 10);
+        $wpUser = !empty($meta['wp_user_id']) ? get_user_by('id', (int) $meta['wp_user_id']) : null;
+
+        $this->view->render('admin/user-detail', [
+            'user_key' => $userKey,
+            'meta' => $meta,
+            'subscriptions' => $subscriptionRows,
+            'plans' => $plans,
+            'usage_summary' => $usageSummary,
+            'usage_entries' => $usageEntries,
+            'transcripts' => $transcripts,
+            'wp_user' => $wpUser,
+            'message' => $message,
+        ]);
+    }
+
+    public function handleUserSubscriptionAssign(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_assign_subscription');
+
+        $userKey = isset($_POST['user_key']) ? sanitize_text_field(wp_unslash($_POST['user_key'])) : '';
+        $subscription = isset($_POST['subscription_slug']) ? sanitize_key($_POST['subscription_slug']) : '';
+        $expiresAt = isset($_POST['expires_at']) ? sanitize_text_field(wp_unslash($_POST['expires_at'])) : null;
+
+        if ($userKey && $subscription) {
+            $this->userSubscriptions->ensureUser($userKey, []);
+            $this->userSubscriptions->assign($userKey, $subscription, [], $expiresAt ?: null);
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page' => 'agentos-users',
+                    'action' => 'view',
+                    'user' => $userKey,
+                    'message' => 'user_saved',
+                ],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function handleUserSubscriptionRemove(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_remove_subscription');
+
+        $userKey = isset($_POST['user_key']) ? sanitize_text_field(wp_unslash($_POST['user_key'])) : '';
+        $subscription = isset($_POST['subscription_slug']) ? sanitize_key($_POST['subscription_slug']) : '';
+
+        if ($userKey && $subscription) {
+            $this->userSubscriptions->remove($userKey, $subscription);
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page' => 'agentos-users',
+                    'action' => 'view',
+                    'user' => $userKey,
+                    'message' => 'user_removed',
+                ],
+                admin_url('admin.php')
+            )
+        );
+        exit;
     }
 
     public function handleAnalysisRequest(): void
@@ -407,5 +869,126 @@ class AdminController
                 }
             }
         }
+    }
+
+    public function handleUserSave(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_save_user');
+
+        $originalKey = isset($_POST['user']['original_key']) ? sanitize_text_field(wp_unslash($_POST['user']['original_key'])) : '';
+        $email = isset($_POST['user']['email']) ? sanitize_email(wp_unslash($_POST['user']['email'])) : '';
+        $notes = isset($_POST['user']['notes']) ? sanitize_textarea_field(wp_unslash($_POST['user']['notes'])) : '';
+        $subscription = isset($_POST['user']['subscription']) ? sanitize_key(wp_unslash($_POST['user']['subscription'])) : '';
+
+        if (!$email) {
+            wp_safe_redirect(
+                add_query_arg(
+                    ['page' => 'agentos-users', 'message' => 'user_invalid'],
+                    admin_url('admin.php')
+                )
+            );
+            exit;
+        }
+
+        $plans = $this->subscriptions->all();
+        if ($subscription && !isset($plans[$subscription])) {
+            $subscription = '';
+        }
+
+        $metaAll = $this->userSubscriptions->getUserMeta();
+        $assignments = $this->userSubscriptions->all();
+        $allKeys = array_unique(array_merge(array_keys($metaAll), array_keys($assignments)));
+
+        $emailLower = strtolower($email);
+        $existingKeyByEmail = $this->findUserKeyByEmail($emailLower, $metaAll);
+        $wpUser = get_user_by('email', $emailLower);
+
+        if ($existingKeyByEmail && !$originalKey) {
+            $originalKey = $existingKeyByEmail;
+        }
+
+        $targetKey = '';
+        if ($wpUser instanceof \WP_User) {
+            $targetKey = 'user_' . (int) $wpUser->ID;
+        }
+
+        if ($existingKeyByEmail) {
+            $targetKey = $existingKeyByEmail;
+        }
+
+        if (!$targetKey) {
+            if ($originalKey) {
+                $targetKey = $originalKey;
+            } else {
+                $targetKey = $this->generateAnonKey($emailLower, $allKeys);
+            }
+        }
+
+        if ($originalKey && $originalKey !== $targetKey) {
+            $this->userSubscriptions->moveUser($originalKey, $targetKey);
+            $this->usage->reassignUser($originalKey, $targetKey);
+            $this->transcripts->reassignUserKey($originalKey, $targetKey);
+        }
+
+        $name = '';
+        $wpUserId = 0;
+        if ($wpUser instanceof \WP_User) {
+            $name = $wpUser->display_name ?: $wpUser->user_login;
+            $wpUserId = (int) $wpUser->ID;
+        }
+
+        $meta = [
+            'name' => $name,
+            'email' => $email,
+            'notes' => $notes,
+            'wp_user_id' => $wpUserId,
+        ];
+
+        $this->userSubscriptions->ensureUser($targetKey, $meta);
+        $this->userSubscriptions->saveUserMeta($targetKey, $meta);
+
+        if ($subscription) {
+            $this->userSubscriptions->assign($targetKey, $subscription);
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page' => 'agentos-users',
+                    'action' => 'view',
+                    'user' => $targetKey,
+                    'message' => 'user_saved',
+                ],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function handleUserDelete(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_delete_user');
+
+        $userKey = isset($_POST['user_key']) ? sanitize_text_field(wp_unslash($_POST['user_key'])) : '';
+        if ($userKey) {
+            $this->userSubscriptions->deleteUser($userKey);
+            $this->usage->deleteForUser($userKey);
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                ['page' => 'agentos-users', 'message' => 'user_deleted'],
+                admin_url('admin.php')
+            )
+        );
+        exit;
     }
 }

@@ -38,6 +38,19 @@
     return out;
   }
   function getAnonId(){ try{ const k='agentos_anon_id'; let v=localStorage.getItem(k); if(!v){ v=uuidv4(); localStorage.setItem(k,v);} return v; }catch(_){ return ''; } }
+  const timestampFormatter = (typeof Intl !== 'undefined' && Intl.DateTimeFormat)
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : null;
+  function formatTimestamp(value){
+    if (!value || typeof value !== 'string') return '';
+    const normalized = value.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return value;
+    if (timestampFormatter) {
+      try { return timestampFormatter.format(date); } catch (_) {}
+    }
+    return date.toLocaleString();
+  }
 
   document.querySelectorAll('.agentos-wrap').forEach((wrap) => {
     let cfg = {};
@@ -56,6 +69,8 @@
     const loggingEnabled = !!cfg.logging;
     const transcriptEnabled = transcriptAttr !== '0' && transcriptAttr !== 'false' && cfg.show_transcript !== false;
     const analysisEnabled = !!cfg.analysis_enabled;
+    const requireSubscription = !!cfg.require_subscription;
+    const sessionTokenCapDefault = parseInt(cfg.session_token_cap || '0', 10) || 0;
     const { info: logInfo, error: logError, debug: logDebug } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
@@ -89,10 +104,98 @@
 
     let pc, micStream, dc, SESSION_ID=null;
     let activeModel = '', activeVoice = '';
+    let activeSubscription = '';
+    let activeSessionCap = sessionTokenCapDefault;
+    let sessionActive = false;
     const transcript = []; // [{role,text}]
     const historyState = {
       loading: false
     };
+    let sessionStats = createSessionStats();
+
+    function createSessionStats() {
+      return {
+        tokensRealtime: 0,
+        tokensText: 0,
+        tokensTotal: 0,
+        startTime: 0
+      };
+    }
+
+    function resetSessionStats() {
+      sessionStats = createSessionStats();
+    }
+
+    function estimateTokens(text) {
+      if (!text) return 0;
+      const stripped = String(text).trim();
+      if (!stripped) return 0;
+      return Math.max(1, Math.ceil(stripped.length / 4));
+    }
+
+    function recordTokens(kind, text) {
+      const tokens = estimateTokens(text);
+      if (!tokens) return;
+      sessionStats.tokensTotal += tokens;
+      if (kind === 'text') {
+        sessionStats.tokensText += tokens;
+      } else {
+        sessionStats.tokensRealtime += tokens;
+      }
+    }
+
+    function currentDurationSeconds() {
+      if (!sessionStats.startTime) {
+        return 0;
+      }
+      return Math.max(0, Math.round((Date.now() - sessionStats.startTime) / 1000));
+    }
+
+    function buildUsagePayload(status, reason) {
+      if (!SESSION_ID) {
+        return null;
+      }
+      return {
+        session_id: SESSION_ID,
+        agent_id: agentId,
+        post_id: postId,
+        subscription_slug: activeSubscription || '',
+        anon_id: getAnonId(),
+        tokens_realtime: sessionStats.tokensRealtime,
+        tokens_text: sessionStats.tokensText,
+        tokens_total: sessionStats.tokensTotal,
+        duration_seconds: currentDurationSeconds(),
+        status: status,
+        reason: reason || '',
+        mode: mode,
+        _wpnonce: nonce
+      };
+    }
+
+    function sendUsageUpdate(status, reason, final = false) {
+      const payload = buildUsagePayload(status, reason);
+      if (!payload) return Promise.resolve();
+      const url = restBase + '/usage/session';
+      const body = JSON.stringify(payload);
+      if (!final && navigator.sendBeacon) {
+        try {
+          const blob = new Blob([body], { type: 'application/json' });
+          navigator.sendBeacon(url, blob);
+          return Promise.resolve();
+        } catch (err) {
+          logError('Beacon usage update failed', err);
+        }
+      }
+      return fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-WP-Nonce': nonce
+        },
+        body,
+        keepalive: !final
+      }).catch(err => logError('Usage update failed', err));
+    }
 
     function setStatus(t){
       if (!els.status) return;
@@ -144,8 +247,11 @@
       assistantIdleTimer = setTimeout(commitAssistant, 1200);
     }
     function commitAssistant(){
-      if (assistantBuffer.trim()){
-        transcript.push({ role:'assistant', text: assistantBuffer });
+      const trimmed = assistantBuffer.trim();
+      if (trimmed){
+        const tokenKind = (mode === 'text') ? 'text' : 'realtime';
+        recordTokens(tokenKind, trimmed);
+        transcript.push({ role:'assistant', text: trimmed });
       }
       assistantBuffer = ''; currentAssistantBubble = null;
     }
@@ -167,23 +273,46 @@
     }
 
     async function getToken() {
+      const anonId = getAnonId();
       const res = await fetch(restBase + '/realtime-token', {
         method: 'POST',
         headers: {'Content-Type':'application/json','X-WP-Nonce': nonce},
         body: JSON.stringify({
           post_id: postId,
           agent_id: agentId,
-          ctx: getCtxFromURL(contextParams)
+          ctx: getCtxFromURL(contextParams),
+          anon_id: anonId,
+          session_id: SESSION_ID
         })
       });
       if (!res.ok) {
-        let payload = '';
-        try { payload = await res.text(); } catch (_){}
-        logError('Token request failed', res.status, payload);
-        throw new Error(`Token request failed (${res.status})`);
+        let raw = '';
+        let parsedMessage = '';
+        let parsedCode = '';
+        try {
+          raw = await res.text();
+          try {
+            const parsed = JSON.parse(raw);
+            parsedMessage = parsed?.message || '';
+            parsedCode = parsed?.code || '';
+            raw = parsed;
+          } catch (_) {}
+        } catch (_) {}
+        logError('Token request failed', res.status, raw);
+        const detail = parsedMessage || `Token request failed (${res.status})`;
+        const codeHint = parsedCode ? ` (${parsedCode})` : '';
+        throw new Error(detail + codeHint);
       }
       const json = await res.json();
       logDebug('Token payload', json);
+      activeSubscription = json.subscription || '';
+      activeSessionCap = json.session_cap || sessionTokenCapDefault;
+      if (Array.isArray(json.warnings) && json.warnings.length) {
+        logInfo('Subscription warnings', json.warnings);
+      }
+      if (json.session_id) {
+        SESSION_ID = json.session_id;
+      }
       return json;
     }
 
@@ -217,7 +346,9 @@
           scrollToBottom();
         }
         if (finalText.trim()){
-          transcript.push({ role:'user', text: finalText.trim() });
+          const trimmed = finalText.trim();
+          recordTokens('realtime', trimmed);
+          transcript.push({ role:'user', text: trimmed });
           finalText = ''; bubble = null;
         }
       };
@@ -231,6 +362,7 @@
     function sendTextMessage(txt) {
       const msg = (txt||'').trim();
       if (!msg) return;
+      recordTokens('text', msg);
       if (canRenderTranscript) {
         addBubble('user', msg);
       }
@@ -258,6 +390,9 @@
         activeModel = ''; activeVoice = '';
         window._agentosModel = ''; window._agentosVoice = '';
         SESSION_ID = uuidv4();
+        resetSessionStats();
+        sessionStats.startTime = Date.now();
+        sessionActive = false;
 
         // Microphone only if voice|both
         if (mode !== 'text') {
@@ -322,12 +457,17 @@
           setTimeout(()=>{ els.save.disabled = false; }, 1500);
         }
         logInfo('Session ready', { model: activeModel, voice: activeVoice });
+        sessionActive = true;
+        sendUsageUpdate('running', 'started');
 
       } catch (e) {
         logError('Start failed', e);
         setStatus('Error: '+e.message);
         els.start.disabled = false;
         stopUserSTT();
+        sendUsageUpdate('pending', 'error');
+        SESSION_ID = null;
+        resetSessionStats();
       }
     });
 
@@ -342,6 +482,9 @@
         els.start.disabled = false;
         if (els.save) els.save.disabled = transcript.length === 0;
         setStatus('Disconnected.');
+        if (typeof commitAssistant === 'function') commitAssistant();
+        sessionActive = false;
+        sendUsageUpdate('final', 'ended', true);
       }
     });
 
@@ -356,8 +499,13 @@
           anon_id: getAnonId(),
           model: activeModel || '',
           voice: activeVoice || '',
+          subscription_slug: activeSubscription || '',
           user_agent: navigator.userAgent,
-          transcript
+          transcript,
+          tokens_realtime: sessionStats.tokensRealtime,
+          tokens_text: sessionStats.tokensText,
+          tokens_total: sessionStats.tokensTotal,
+          duration_seconds: currentDurationSeconds()
         };
         const res = await fetch(restBase + '/transcript-db', {
           method:'POST',
@@ -368,6 +516,10 @@
         if (!res.ok) throw new Error(data?.message || 'Save failed');
         setStatus('Transcript saved (id '+data.id+')');
         if (analysisEnabled) loadHistory();
+        await sendUsageUpdate('final', 'saved', true);
+        SESSION_ID = null;
+        resetSessionStats();
+        sessionActive = false;
       } catch (e) {
         logError('Save failed', e);
         setStatus('Save error: ' + (e && e.message ? e.message : ''));
@@ -405,10 +557,12 @@
         const meta = document.createElement('div');
         meta.className = 'agentos-history__meta';
         const bits = [];
-        if (item.created_at) bits.push('Saved ' + item.created_at);
+        const createdLabel = formatTimestamp(item.created_at);
+        if (createdLabel) bits.push('Saved ' + createdLabel);
         const status = item.analysis_status || 'idle';
-        if (status === 'succeeded' && item.analysis_completed_at) {
-          bits.push('Analyzed ' + item.analysis_completed_at);
+        const completedLabel = formatTimestamp(item.analysis_completed_at);
+        if (status === 'succeeded' && completedLabel) {
+          bits.push('Analyzed ' + completedLabel);
         } else {
           bits.push(statusLabels[status] || status);
         }
@@ -465,6 +619,13 @@
     if (analysisEnabled) {
       loadHistory();
     }
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (!sessionActive || !SESSION_ID || !sessionStats.startTime) {
+      return;
+    }
+    sendUsageUpdate('pending', 'aborted');
   });
 
 })();

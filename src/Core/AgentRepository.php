@@ -20,6 +20,8 @@ class AgentRepository
             'analysis_model' => '',
             'analysis_system_prompt' => '',
             'analysis_auto_run' => false,
+            'require_subscription' => false,
+            'session_token_cap' => 0,
         ];
     }
 
@@ -126,6 +128,12 @@ class AgentRepository
         $agent['analysis_model'] = sanitize_text_field($input['analysis_model'] ?? '');
         $agent['analysis_system_prompt'] = sanitize_textarea_field($input['analysis_system_prompt'] ?? '');
 
+        $agent['require_subscription'] = !empty($input['require_subscription']);
+        $agent['session_token_cap'] = isset($input['session_token_cap']) ? intval($input['session_token_cap']) : 0;
+        if ($agent['session_token_cap'] < 0) {
+            $agent['session_token_cap'] = 0;
+        }
+
         $publicPostTypes = get_post_types(['public' => true], 'names');
         $requested = array_map('sanitize_text_field', (array) ($input['post_types'] ?? []));
         $agent['post_types'] = array_values(array_intersect($requested, $publicPostTypes));
@@ -177,6 +185,8 @@ class AgentRepository
             'analysis_model' => sanitize_text_field($agent['analysis_model'] ?? ''),
             'analysis_system_prompt' => sanitize_textarea_field($agent['analysis_system_prompt'] ?? ''),
             'analysis_auto_run' => !empty($agent['analysis_auto_run']),
+            'require_subscription' => !empty($agent['require_subscription']),
+            'session_token_cap' => isset($agent['session_token_cap']) ? (int) $agent['session_token_cap'] : 0,
         ];
     }
 

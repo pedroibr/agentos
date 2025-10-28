@@ -1,0 +1,32 @@
+{
+  "apiVersion": 3,
+  "name": "agentos/agent",
+  "title": "AgentOS Agent",
+  "category": "widgets",
+  "icon": "microphone",
+  "description": "Embed an AgentOS AI agent on the page without using shortcodes.",
+  "keywords": [
+    "ai",
+    "chat",
+    "voice"
+  ],
+  "attributes": {
+    "agentId": {
+      "type": "string",
+      "default": ""
+    },
+    "mode": {
+      "type": "string",
+      "default": ""
+    },
+    "height": {
+      "type": "string",
+      "default": "70vh"
+    }
+  },
+  "supports": {
+    "html": false,
+    "align": false
+  },
+  "textdomain": "agentos"
+}

@@ -1,0 +1,21 @@
+.agentos-block-editor__preview {
+  min-height: 120px;
+}
+
+.agentos-block-preview-card {
+  background: #fff;
+  border: 1px solid #dcdfe4;
+  border-radius: 6px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.agentos-block-preview-card__title {
+  font-size: 16px;
+  line-height: 1.4;
+  margin: 0 0 12px;
+}
+
+.agentos-block-preview-card p {
+  margin: 0 0 8px;
+}

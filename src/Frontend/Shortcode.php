@@ -82,6 +82,8 @@ class Shortcode
             'logging' => !empty($settings['enable_logging']),
             'show_transcript' => !empty($agent['show_transcript']),
             'analysis_enabled' => !empty($agent['analysis_enabled']),
+            'require_subscription' => !empty($agent['require_subscription']),
+            'session_token_cap' => isset($agent['session_token_cap']) ? (int) $agent['session_token_cap'] : 0,
         ];
 
         $template = $this->templateDir . '/frontend/shortcode.php';
