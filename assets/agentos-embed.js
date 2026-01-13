@@ -102,7 +102,7 @@
       els.textUI.classList.add('is-visible');
     }
 
-    let pc, micStream, dc, SESSION_ID=null;
+    let pc, micStream, micSendStream, dc, SESSION_ID=null;
     let activeModel = '', activeVoice = '';
     let activeSubscription = '';
     let activeSessionCap = sessionTokenCapDefault;
@@ -112,6 +112,13 @@
       loading: false
     };
     let sessionStats = createSessionStats();
+    let micAudioContext = null;
+    let micGainNode = null;
+    let micAnalyser = null;
+    let bargeMonitor = null;
+    let assistantSpeaking = false;
+    const halfDuplexEnabled = mode !== 'text';
+    const inputTranscriptionBuffer = new Map();
 
     function createSessionStats() {
       return {
@@ -256,20 +263,116 @@
       assistantBuffer = ''; currentAssistantBubble = null;
     }
 
+    function setMicDucked(enabled){
+      if (!halfDuplexEnabled) return;
+      if (micGainNode) {
+        micGainNode.gain.value = enabled ? 0 : 1;
+      }
+    }
+
+    function getMicLevel(){
+      if (!micAnalyser) return 0;
+      const data = new Uint8Array(micAnalyser.fftSize);
+      micAnalyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / data.length);
+    }
+
+    function stopBargeMonitor(){
+      if (bargeMonitor) {
+        clearInterval(bargeMonitor);
+        bargeMonitor = null;
+      }
+    }
+
+    function interruptAssistant(){
+      if (!assistantSpeaking) return;
+      assistantSpeaking = false;
+      setMicDucked(false);
+      stopBargeMonitor();
+      if (dc && dc.readyState === 'open') {
+        dc.send(JSON.stringify({ type: 'response.cancel' }));
+      }
+    }
+
+    function startBargeMonitor(){
+      if (!halfDuplexEnabled || bargeMonitor || mode === 'text') return;
+      bargeMonitor = setInterval(() => {
+        const level = getMicLevel();
+        if (level > 0.12) {
+          interruptAssistant();
+        }
+      }, 200);
+    }
+
+    function setAssistantSpeaking(active){
+      if (!halfDuplexEnabled || mode === 'text') return;
+      if (active) {
+        assistantSpeaking = true;
+        setMicDucked(true);
+        startBargeMonitor();
+      } else {
+        assistantSpeaking = false;
+        stopBargeMonitor();
+        setTimeout(() => setMicDucked(false), 200);
+      }
+    }
+
+    function updateUserTranscript(itemId, text){
+      const entry = inputTranscriptionBuffer.get(itemId) || { text: '', bubble: null };
+      entry.text = text;
+      if (canRenderTranscript) {
+        if (!entry.bubble) entry.bubble = addBubble('user','');
+        if (entry.bubble) {
+          entry.bubble.innerHTML = escapeHtml(entry.text.trim());
+          scrollToBottom();
+        }
+      }
+      inputTranscriptionBuffer.set(itemId, entry);
+    }
+
+    function commitUserTranscript(itemId, text){
+      const trimmed = (text || '').trim();
+      if (!trimmed) return;
+      recordTokens('realtime', trimmed);
+      transcript.push({ role:'user', text: trimmed });
+      inputTranscriptionBuffer.delete(itemId);
+    }
+
     function handleRealtimeEvent(ev){
       if (!ev || !ev.type) return;
+
+      if (mode !== 'text') {
+        const itemId = ev.item_id || ev.conversation_item_id || ev.id || 'input_audio';
+        if (ev.type === 'conversation.item.input_audio_transcription.delta' && typeof ev.delta === 'string') {
+          updateUserTranscript(itemId, (inputTranscriptionBuffer.get(itemId)?.text || '') + ev.delta);
+          return;
+        }
+        if (ev.type === 'conversation.item.input_audio_transcription.completed') {
+          const text = ev.transcript || ev.text || '';
+          updateUserTranscript(itemId, text);
+          commitUserTranscript(itemId, text);
+          return;
+        }
+      }
+
       if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
+        setAssistantSpeaking(true);
         updateAssistant(ev.delta); return;
       }
       if (ev.type === 'response.output_text.done' || ev.type === 'response.completed') {
+        setAssistantSpeaking(false);
         commitAssistant(); return;
       }
       if (ev.type === 'response.message' && Array.isArray(ev.content)) {
         const text = ev.content.filter(p => p.type === 'output_text' && typeof p.text === 'string').map(p => p.text).join('');
-        if (text) { updateAssistant(text); commitAssistant(); }
+        if (text) { setAssistantSpeaking(true); updateAssistant(text); commitAssistant(); setAssistantSpeaking(false); }
         return;
       }
-      if (typeof ev.delta === 'string' && ev.delta) { updateAssistant(ev.delta); return; }
     }
 
     async function getToken() {
@@ -325,38 +428,35 @@
       });
     }
 
-    // (A) VOICE path (WebRTC + optional client STT)
-    let recog = null, recogActive = false;
-    function startUserSTT(){
-      if (mode === 'text') return; // no mic mode
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) return;
-      recog = new SR(); recog.lang = 'en-US'; recog.continuous = true; recog.interimResults = true;
-      let bubble = null, finalText = '';
-      recog.onresult = (e) => {
-        let interim = '';
-        for (let i=e.resultIndex; i<e.results.length; i++){
-          const r = e.results[i];
-          if (r.isFinal) finalText += r[0].transcript;
-          else interim += r[0].transcript;
-        }
-        if (!bubble && canRenderTranscript) bubble = addBubble('user','');
-        if (bubble) {
-          bubble.innerHTML = escapeHtml((finalText + interim).trim());
-          scrollToBottom();
-        }
-        if (finalText.trim()){
-          const trimmed = finalText.trim();
-          recordTokens('realtime', trimmed);
-          transcript.push({ role:'user', text: trimmed });
-          finalText = ''; bubble = null;
-        }
-      };
-      recog.onerror = () => {};
-      recog.onend = () => { if (recogActive) try{recog.start();}catch(_){} };
-      try{ recog.start(); recogActive = true; }catch(_){}
+    function setupMicPipeline(stream){
+      if (!stream || mode === 'text') return stream;
+      const track = stream.getAudioTracks()[0];
+      if (!track) return stream;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = 1;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      source.connect(gain);
+      const dest = ctx.createMediaStreamDestination();
+      gain.connect(dest);
+      micAudioContext = ctx;
+      micGainNode = gain;
+      micAnalyser = analyser;
+      return dest.stream;
     }
-    function stopUserSTT(){ try{ recogActive=false; if (recog) recog.stop(); }catch(_){} }
+
+    function cleanupMicPipeline(){
+      stopBargeMonitor();
+      if (micAudioContext) {
+        try { micAudioContext.close(); } catch (_) {}
+      }
+      micAudioContext = null;
+      micGainNode = null;
+      micAnalyser = null;
+    }
 
     // (B) TEXT send path (send text as conversation.item to the realtime DC)
     function sendTextMessage(txt) {
@@ -397,8 +497,14 @@
         // Microphone only if voice|both
         if (mode !== 'text') {
           setStatus('Requesting mic…');
-          micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
-          startUserSTT();
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+          micSendStream = setupMicPipeline(micStream);
         }
 
         setStatus('Creating session…');
@@ -413,7 +519,10 @@
         // WebRTC peer
         pc = new RTCPeerConnection();
         pc.ontrack = (e) => { els.audio.srcObject = e.streams[0]; };
-        if (mode !== 'text') micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
+        if (mode !== 'text') {
+          const streamToSend = micSendStream || micStream;
+          streamToSend.getTracks().forEach(t => pc.addTrack(t, streamToSend));
+        }
         pc.onconnectionstatechange = () => logInfo('Peer connection state', pc.connectionState);
         pc.oniceconnectionstatechange = () => logDebug('ICE connection state', pc.iceConnectionState);
 
@@ -464,7 +573,7 @@
         logError('Start failed', e);
         setStatus('Error: '+e.message);
         els.start.disabled = false;
-        stopUserSTT();
+        cleanupMicPipeline();
         sendUsageUpdate('pending', 'error');
         SESSION_ID = null;
         resetSessionStats();
@@ -476,8 +585,8 @@
         if (pc) pc.close();
         if (micStream) micStream.getTracks().forEach(t => t.stop());
       } finally {
-        stopUserSTT();
-        pc = null; dc = null; micStream = null;
+        cleanupMicPipeline();
+        pc = null; dc = null; micStream = null; micSendStream = null;
         els.stop.disabled = true;
         els.start.disabled = false;
         if (els.save) els.save.disabled = transcript.length === 0;

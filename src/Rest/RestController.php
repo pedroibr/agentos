@@ -286,6 +286,18 @@ class RestController
             'instructions' => $instructions,
         ];
 
+        if (($config['mode'] ?? '') !== 'text') {
+            $payload['input_audio_transcription'] = [
+                'model' => 'gpt-4o-transcribe',
+            ];
+            $payload['turn_detection'] = [
+                'type' => 'server_vad',
+            ];
+            $payload['input_audio_noise_reduction'] = [
+                'type' => 'near_field',
+            ];
+        }
+
         $response = wp_remote_post(
             'https://api.openai.com/v1/realtime/sessions',
             [
