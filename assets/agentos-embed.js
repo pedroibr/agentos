@@ -102,7 +102,7 @@
       els.textUI.classList.add('is-visible');
     }
 
-    let pc, micStream, micSendStream, dc, SESSION_ID=null;
+    let pc, micStream, micSendStream, micTrack, dc, SESSION_ID=null;
     let activeModel = '', activeVoice = '';
     let activeSubscription = '';
     let activeSessionCap = sessionTokenCapDefault;
@@ -263,7 +263,7 @@
       assistantBuffer = ''; currentAssistantBubble = null;
     }
 
-    function setMicDucked(enabled){
+    function setMicMuted(enabled){
       if (!halfDuplexEnabled) return;
       if (micGainNode) {
         micGainNode.gain.value = enabled ? 0 : 1;
@@ -292,7 +292,7 @@
     function interruptAssistant(){
       if (!assistantSpeaking) return;
       assistantSpeaking = false;
-      setMicDucked(false);
+      setMicMuted(false);
       stopBargeMonitor();
       if (dc && dc.readyState === 'open') {
         dc.send(JSON.stringify({ type: 'response.cancel' }));
@@ -313,12 +313,12 @@
       if (!halfDuplexEnabled || mode === 'text') return;
       if (active) {
         assistantSpeaking = true;
-        setMicDucked(true);
+        setMicMuted(true);
         startBargeMonitor();
       } else {
         assistantSpeaking = false;
         stopBargeMonitor();
-        setTimeout(() => setMicDucked(false), 200);
+        setTimeout(() => setMicMuted(false), 200);
       }
     }
 
@@ -347,6 +347,13 @@
       if (!ev || !ev.type) return;
 
       if (mode !== 'text') {
+        if (ev.type === 'conversation.item.input_audio_transcription.delta' || ev.type === 'conversation.item.input_audio_transcription.completed') {
+          logDebug('Input transcription event', {
+            type: ev.type,
+            assistant_speaking: assistantSpeaking,
+            mic_muted: !!micGainNode && micGainNode.gain.value === 0
+          });
+        }
         const itemId = ev.item_id || ev.conversation_item_id || ev.id || 'input_audio';
         if (ev.type === 'conversation.item.input_audio_transcription.delta' && typeof ev.delta === 'string') {
           updateUserTranscript(itemId, (inputTranscriptionBuffer.get(itemId)?.text || '') + ev.delta);
@@ -501,9 +508,11 @@
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
-              autoGainControl: true
+              autoGainControl: true,
+              channelCount: 1
             }
           });
+          micTrack = micStream.getAudioTracks()[0] || null;
           micSendStream = setupMicPipeline(micStream);
         }
 
@@ -586,7 +595,7 @@
         if (micStream) micStream.getTracks().forEach(t => t.stop());
       } finally {
         cleanupMicPipeline();
-        pc = null; dc = null; micStream = null; micSendStream = null;
+        pc = null; dc = null; micStream = null; micSendStream = null; micTrack = null;
         els.stop.disabled = true;
         els.start.disabled = false;
         if (els.save) els.save.disabled = transcript.length === 0;
