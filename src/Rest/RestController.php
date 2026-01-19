@@ -239,10 +239,6 @@ class RestController
             $this->userSubscriptions->ensureUser($userKey, []);
         }
 
-        if ($userKey) {
-            $this->userSubscriptions->ensureUser($userKey, []);
-        }
-
         $this->usage->logStart([
             'session_id' => $sessionId,
             'user_key' => $userKey,
@@ -288,6 +284,9 @@ class RestController
             'voice' => $config['voice'],
             'modalities' => ['audio', 'text'],
             'instructions' => $instructions,
+            'input_audio_transcription' => [
+                'model' => 'whisper-1',
+            ],
         ];
 
         $response = wp_remote_post(
@@ -498,14 +497,6 @@ class RestController
         $currentUser = wp_get_current_user();
         if ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) {
             return 'user_' . (int) $currentUser->ID;
-        }
-
-        $anonId = trim($anonId);
-        if ($anonId !== '') {
-            $anonId = preg_replace('/[^a-zA-Z0-9_\-:@]/', '', $anonId);
-            if ($anonId !== '') {
-                return 'anon_' . $anonId;
-            }
         }
 
         return '';

@@ -25,6 +25,7 @@
       info: safe('info'),
       error: safe('error'),
       debug: safe('debug'),
+      warn: safe('warn'),
     };
   }
 
@@ -71,7 +72,7 @@
     const analysisEnabled = !!cfg.analysis_enabled;
     const requireSubscription = !!cfg.require_subscription;
     const sessionTokenCapDefault = parseInt(cfg.session_token_cap || '0', 10) || 0;
-    const { info: logInfo, error: logError, debug: logDebug } = createLogger(loggingEnabled);
+    const { info: logInfo, error: logError, debug: logDebug, warn: logWarn } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
       return;
@@ -90,6 +91,11 @@
       panel: $('.agentos-transcript', wrap)
     };
     const canRenderTranscript = transcriptEnabled && !!els.log && !!els.panel;
+    if (!transcriptEnabled) {
+      logInfo('Transcript disabled', { dataAttr: transcriptAttr, config: cfg.show_transcript });
+    } else if (!canRenderTranscript) {
+      logWarn('Transcript UI missing; bubbles will not render', { hasLog: !!els.log, hasPanel: !!els.panel });
+    }
     const historyUI = {
       container: $('.agentos-history__content', wrap),
       placeholder: $('.agentos-history__placeholder', wrap)
@@ -215,14 +221,19 @@
       if (!canRenderTranscript) return;
       els.panel.scrollTop = els.panel.scrollHeight;
     }
-    function addBubble(role, text=''){
+    function addBubble(role, text='', beforeEl){
       if (!canRenderTranscript) return null;
       const div = document.createElement('div');
       div.className = 'msg ' + (role==='assistant'?'assistant':'user');
       div.style.cssText = 'max-width:90%;margin:6px 0;padding:10px 12px;border-radius:12px;white-space:pre-wrap;'+
                           (role==='assistant'?'background:#f6f8ff;border:1px solid #e7ebff;margin-left:auto':'background:#f7f7f7;border:1px solid #eee');
       div.innerHTML = escapeHtml(text);
-      els.log.appendChild(div); scrollToBottom();
+      if (beforeEl && beforeEl.parentNode === els.log) {
+        els.log.insertBefore(div, beforeEl);
+      } else {
+        els.log.appendChild(div);
+      }
+      scrollToBottom();
       return div;
     }
 
@@ -230,6 +241,8 @@
     let assistantBuffer = '';
     let currentAssistantBubble = null;
     let assistantIdleTimer = null;
+    let lastAssistantBubble = null;
+    let lastAssistantAt = 0;
     function updateAssistant(delta){
       if (!canRenderTranscript) {
         assistantBuffer += delta;
@@ -237,7 +250,11 @@
         assistantIdleTimer = setTimeout(commitAssistant, 1200);
         return;
       }
-      if (!currentAssistantBubble) currentAssistantBubble = addBubble('assistant','');
+      if (!currentAssistantBubble) {
+        currentAssistantBubble = addBubble('assistant','');
+        lastAssistantBubble = currentAssistantBubble;
+        lastAssistantAt = Date.now();
+      }
       assistantBuffer += delta;
       if (currentAssistantBubble) {
         currentAssistantBubble.innerHTML += escapeHtml(delta);
@@ -252,24 +269,117 @@
         const tokenKind = (mode === 'text') ? 'text' : 'realtime';
         recordTokens(tokenKind, trimmed);
         transcript.push({ role:'assistant', text: trimmed });
+        lastAssistantText = trimmed;
       }
       assistantBuffer = ''; currentAssistantBubble = null;
     }
 
+    // User streaming (realtime transcription)
+    let userBuffer = '';
+    let currentUserBubble = null;
+    let userIdleTimer = null;
+    let useRealtimeUserTranscript = false;
+    let userTranscriptionState = { itemId: '', hasDelta: false };
+    let lastAssistantText = '';
+    function normalizeText(input){
+      return String(input || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+    function shouldIgnoreUserText(text){
+      const clean = normalizeText(text);
+      if (!clean || clean.length < 6) return false;
+      const assistantClean = normalizeText(lastAssistantText);
+      if (!assistantClean) return false;
+      return assistantClean.includes(clean) || clean.includes(assistantClean);
+    }
+    function updateUserFromRealtime(delta){
+      if (!delta) return;
+      if (!canRenderTranscript) {
+        userBuffer += delta;
+        clearTimeout(userIdleTimer);
+        userIdleTimer = setTimeout(commitUserFromRealtime, 1200);
+        return;
+      }
+      if (!currentUserBubble) {
+        let beforeEl = null;
+        const recentAssistant = lastAssistantBubble && (Date.now() - lastAssistantAt) < 8000;
+        if (currentAssistantBubble) {
+          beforeEl = currentAssistantBubble;
+        } else if (recentAssistant) {
+          beforeEl = lastAssistantBubble;
+        }
+        currentUserBubble = addBubble('user','', beforeEl);
+      }
+      userBuffer += delta;
+      if (currentUserBubble) {
+        currentUserBubble.innerHTML += escapeHtml(delta);
+        scrollToBottom();
+      }
+      clearTimeout(userIdleTimer);
+      userIdleTimer = setTimeout(commitUserFromRealtime, 1200);
+    }
+    function commitUserFromRealtime(){
+      const trimmed = userBuffer.trim();
+      if (trimmed){
+        if (shouldIgnoreUserText(trimmed)) {
+          if (currentUserBubble && currentUserBubble.parentNode) {
+            currentUserBubble.parentNode.removeChild(currentUserBubble);
+          }
+        } else {
+          recordTokens('realtime', trimmed);
+          transcript.push({ role:'user', text: trimmed });
+        }
+      }
+      userBuffer = ''; currentUserBubble = null;
+    }
+
     function handleRealtimeEvent(ev){
       if (!ev || !ev.type) return;
+      if (ev.type !== 'response.output_text.delta') {
+        logDebug('Realtime event', { type: ev.type });
+      }
+      if (useRealtimeUserTranscript && String(ev.type).includes('input_audio_transcription')) {
+        const itemId = ev.item_id || (ev.item && ev.item.id) || ev.id || '';
+        if (itemId && itemId !== userTranscriptionState.itemId) {
+          if (userBuffer) commitUserFromRealtime();
+          userTranscriptionState = { itemId, hasDelta: false };
+        }
+        const delta = ev.delta || '';
+        const finalText = ev.text || ev.transcript || '';
+        if (delta) {
+          userTranscriptionState.hasDelta = true;
+          updateUserFromRealtime(delta);
+        } else if (finalText) {
+          if (!userTranscriptionState.hasDelta && !userBuffer && !currentUserBubble) {
+            updateUserFromRealtime(finalText);
+          }
+        }
+        if (String(ev.type).includes('completed') || String(ev.type).includes('done')) {
+          commitUserFromRealtime();
+        }
+        return;
+      }
       if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
+        if (userBuffer) commitUserFromRealtime();
         updateAssistant(ev.delta); return;
       }
       if (ev.type === 'response.output_text.done' || ev.type === 'response.completed') {
         commitAssistant(); return;
       }
+      if (ev.type === 'response.created') {
+        if (userBuffer) commitUserFromRealtime();
+        return;
+      }
       if (ev.type === 'response.message' && Array.isArray(ev.content)) {
+        if (assistantBuffer || currentAssistantBubble) {
+          return;
+        }
         const text = ev.content.filter(p => p.type === 'output_text' && typeof p.text === 'string').map(p => p.text).join('');
         if (text) { updateAssistant(text); commitAssistant(); }
         return;
       }
-      if (typeof ev.delta === 'string' && ev.delta) { updateAssistant(ev.delta); return; }
+      if (ev.type && String(ev.type).startsWith('response.') && typeof ev.delta === 'string' && ev.delta) {
+        updateAssistant(ev.delta); return;
+      }
     }
 
     async function getToken() {
@@ -329,11 +439,19 @@
     let recog = null, recogActive = false;
     function startUserSTT(){
       if (mode === 'text') return; // no mic mode
+      if (useRealtimeUserTranscript) {
+        logInfo('Browser STT disabled; using realtime transcription for user bubbles');
+        return;
+      }
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) return;
+      if (!SR) {
+        logWarn('SpeechRecognition unavailable; user bubbles depend on browser STT support');
+        return;
+      }
       recog = new SR(); recog.lang = 'en-US'; recog.continuous = true; recog.interimResults = true;
       let bubble = null, finalText = '';
       recog.onresult = (e) => {
+        if (useRealtimeUserTranscript) return;
         let interim = '';
         for (let i=e.resultIndex; i<e.results.length; i++){
           const r = e.results[i];
@@ -347,13 +465,16 @@
         }
         if (finalText.trim()){
           const trimmed = finalText.trim();
+          logDebug('STT final', { text: trimmed });
           recordTokens('realtime', trimmed);
           transcript.push({ role:'user', text: trimmed });
           finalText = ''; bubble = null;
         }
       };
-      recog.onerror = () => {};
-      recog.onend = () => { if (recogActive) try{recog.start();}catch(_){} };
+      recog.onerror = (e) => { logWarn('SpeechRecognition error', e); };
+      recog.onend = () => {
+        logDebug('SpeechRecognition ended');
+        if (recogActive) try{recog.start();}catch(_){} };
       try{ recog.start(); recogActive = true; }catch(_){}
     }
     function stopUserSTT(){ try{ recogActive=false; if (recog) recog.stop(); }catch(_){} }
@@ -363,6 +484,7 @@
       const msg = (txt||'').trim();
       if (!msg) return;
       recordTokens('text', msg);
+      logDebug('Text message sent', { length: msg.length });
       if (canRenderTranscript) {
         addBubble('user', msg);
       }
@@ -373,6 +495,8 @@
           item: { type:'message', role:'user', content:[{ type:'input_text', text: msg }] }
         }));
         dc.send(JSON.stringify({ type: 'response.create' }));
+      } else {
+        logWarn('DataChannel not open; text message not sent to realtime API');
       }
     }
 
@@ -396,8 +520,15 @@
 
         // Microphone only if voice|both
         if (mode !== 'text') {
+          useRealtimeUserTranscript = true;
           setStatus('Requesting mic…');
-          micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
           startUserSTT();
         }
 

@@ -410,47 +410,6 @@ class AdminController
         return $meta;
     }
 
-    private function findUserKeyByEmail(string $email, array $metaList): ?string
-    {
-        if ($email === '') {
-            return null;
-        }
-
-        foreach ($metaList as $key => $meta) {
-            if (empty($meta['email'])) {
-                continue;
-            }
-            if (strtolower($meta['email']) === $email) {
-                return $key;
-            }
-        }
-
-        return null;
-    }
-
-    private function generateAnonKey(string $email, array $existingKeys): string
-    {
-        $sanitized = sanitize_key(str_replace(['@', '.'], '-', $email));
-        if (!$sanitized) {
-            $sanitized = strtolower(wp_generate_password(8, false, false));
-        }
-
-        $base = 'anon_' . substr($sanitized, 0, 20);
-        if ($base === 'anon_') {
-            $base .= strtolower(wp_generate_password(6, false, false));
-        }
-
-        $existing = array_flip($existingKeys);
-        $candidate = $base;
-        $i = 2;
-        while (isset($existing[$candidate])) {
-            $candidate = $base . '-' . $i;
-            $i++;
-        }
-
-        return $candidate;
-    }
-
     public function handleSubscriptionSave(): void
     {
         if (!current_user_can('manage_options')) {
@@ -899,34 +858,20 @@ class AdminController
             $subscription = '';
         }
 
-        $metaAll = $this->userSubscriptions->getUserMeta();
-        $assignments = $this->userSubscriptions->all();
-        $allKeys = array_unique(array_merge(array_keys($metaAll), array_keys($assignments)));
-
         $emailLower = strtolower($email);
-        $existingKeyByEmail = $this->findUserKeyByEmail($emailLower, $metaAll);
         $wpUser = get_user_by('email', $emailLower);
 
-        if ($existingKeyByEmail && !$originalKey) {
-            $originalKey = $existingKeyByEmail;
+        if (!$wpUser instanceof \WP_User || !$wpUser->exists()) {
+            wp_safe_redirect(
+                add_query_arg(
+                    ['page' => 'agentos-users', 'message' => 'user_missing'],
+                    admin_url('admin.php')
+                )
+            );
+            exit;
         }
 
-        $targetKey = '';
-        if ($wpUser instanceof \WP_User) {
-            $targetKey = 'user_' . (int) $wpUser->ID;
-        }
-
-        if ($existingKeyByEmail) {
-            $targetKey = $existingKeyByEmail;
-        }
-
-        if (!$targetKey) {
-            if ($originalKey) {
-                $targetKey = $originalKey;
-            } else {
-                $targetKey = $this->generateAnonKey($emailLower, $allKeys);
-            }
-        }
+        $targetKey = 'user_' . (int) $wpUser->ID;
 
         if ($originalKey && $originalKey !== $targetKey) {
             $this->userSubscriptions->moveUser($originalKey, $targetKey);
@@ -934,16 +879,12 @@ class AdminController
             $this->transcripts->reassignUserKey($originalKey, $targetKey);
         }
 
-        $name = '';
-        $wpUserId = 0;
-        if ($wpUser instanceof \WP_User) {
-            $name = $wpUser->display_name ?: $wpUser->user_login;
-            $wpUserId = (int) $wpUser->ID;
-        }
+        $name = $wpUser->display_name ?: $wpUser->user_login;
+        $wpUserId = (int) $wpUser->ID;
 
         $meta = [
             'name' => $name,
-            'email' => $email,
+            'email' => sanitize_email($wpUser->user_email),
             'notes' => $notes,
             'wp_user_id' => $wpUserId,
         ];
