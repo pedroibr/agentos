@@ -133,6 +133,9 @@
                 placeholder="<?php esc_attr_e('Message AgentOS', 'agentos'); ?>"
                 rows="3"></textarea>
               <div class="agentos-composer__actions">
+                <button class="agentos-btn agentos-btn--ghost agentos-text-record" type="button">
+                  <?php esc_html_e('Record', 'agentos'); ?>
+                </button>
                 <button class="agentos-btn agentos-btn--accent agentos-text-send">
                   <?php esc_html_e('Send', 'agentos'); ?>
                 </button>

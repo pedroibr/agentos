@@ -640,10 +640,15 @@
 
 .agentos-composer__actions {
   display: flex;
+  gap: 10px;
   justify-content: flex-end;
 }
 
 .agentos-wrap[data-mode="voice"] .agentos-text-ui {
+  display: none !important;
+}
+
+.agentos-wrap:not([data-mode="text"]) .agentos-text-record {
   display: none !important;
 }
 

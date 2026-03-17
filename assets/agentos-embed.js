@@ -90,6 +90,7 @@
       audio: $('.agentos-audio', wrap),
       textUI: $('.agentos-text-ui', wrap),
       textInput: $('.agentos-text-input', wrap),
+      textRecord: $('.agentos-text-record', wrap),
       textSend: $('.agentos-text-send', wrap),
       log: $('.agentos-transcript .agentos-transcript-log', wrap),
       panel: $('.agentos-transcript', wrap),
@@ -130,6 +131,12 @@
     let activeSessionCap = sessionTokenCapDefault;
     let activeContext = {};
     let textRequestInFlight = false;
+    let inputRecorder = null;
+    let inputRecorderStream = null;
+    let inputRecorderChunks = [];
+    let inputRecorderMime = '';
+    let inputRecorderActive = false;
+    let inputRecorderDiscard = false;
     let sessionActive = false;
     const transcript = []; // [{role,text}]
     const historyState = {
@@ -442,6 +449,158 @@
       closeSidebarIfCompact();
     }
 
+    function supportsInputRecorder() {
+      return !!(mode === 'text' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    }
+
+    function updateTextRecordButton() {
+      if (!els.textRecord) return;
+      if (!supportsInputRecorder()) {
+        els.textRecord.disabled = true;
+        els.textRecord.textContent = 'Record unavailable';
+        return;
+      }
+      els.textRecord.disabled = textRequestInFlight;
+      els.textRecord.textContent = inputRecorderActive ? 'Stop recording' : 'Record';
+    }
+
+    function appendTranscribedText(text) {
+      if (!els.textInput) return;
+      const current = els.textInput.value || '';
+      const trimmed = String(text || '').trim();
+      if (!trimmed) return;
+      els.textInput.value = current
+        ? current.replace(/\s*$/, '') + '\n' + trimmed
+        : trimmed;
+      els.textInput.focus();
+    }
+
+    function cleanupInputRecorder(discard = false) {
+      inputRecorderDiscard = discard;
+      try {
+        if (inputRecorder && inputRecorder.state !== 'inactive') {
+          inputRecorder.stop();
+        }
+      } catch (_) {}
+      try {
+        if (inputRecorderStream) {
+          inputRecorderStream.getTracks().forEach((track) => track.stop());
+        }
+      } catch (_) {}
+      inputRecorder = null;
+      inputRecorderStream = null;
+      inputRecorderChunks = [];
+      inputRecorderMime = '';
+      inputRecorderActive = false;
+      updateTextRecordButton();
+    }
+
+    async function transcribeRecordedAudio(blob) {
+      const filename = blob.type && blob.type.indexOf('mp4') !== -1 ? 'recording.m4a' : 'recording.webm';
+      const formData = new FormData();
+      formData.append('post_id', String(postId));
+      formData.append('agent_id', agentId);
+      formData.append('anon_id', getAnonId());
+      if (navigator.language) {
+        formData.append('language', String(navigator.language).split('-')[0]);
+      }
+      formData.append('audio', blob, filename);
+
+      const res = await fetch(restBase + '/text-transcription', {
+        method: 'POST',
+        headers: {'X-WP-Nonce': nonce},
+        body: formData
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.message || ('Transcription failed (' + res.status + ')'));
+      }
+      return String(data.text || '').trim();
+    }
+
+    function preferredRecorderMimeType() {
+      if (!window.MediaRecorder || typeof window.MediaRecorder.isTypeSupported !== 'function') {
+        return '';
+      }
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+      ];
+      for (const candidate of candidates) {
+        if (window.MediaRecorder.isTypeSupported(candidate)) {
+          return candidate;
+        }
+      }
+      return '';
+    }
+
+    async function toggleTextRecorder() {
+      if (!supportsInputRecorder() || textRequestInFlight) {
+        return;
+      }
+
+      if (inputRecorderActive) {
+        setStatus('Transcribing…');
+        cleanupInputRecorder();
+        return;
+      }
+
+      try {
+        inputRecorderChunks = [];
+        inputRecorderMime = preferredRecorderMimeType();
+        inputRecorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        inputRecorder = inputRecorderMime ? new MediaRecorder(inputRecorderStream, { mimeType: inputRecorderMime }) : new MediaRecorder(inputRecorderStream);
+        inputRecorderMime = inputRecorder.mimeType || inputRecorderMime || 'audio/webm';
+        inputRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            inputRecorderChunks.push(event.data);
+          }
+        };
+        inputRecorder.onstop = async () => {
+          const blob = inputRecorderChunks.length ? new Blob(inputRecorderChunks, { type: inputRecorderMime || 'audio/webm' }) : null;
+          inputRecorder = null;
+          if (inputRecorderStream) {
+            inputRecorderStream.getTracks().forEach((track) => track.stop());
+          }
+          inputRecorderStream = null;
+          inputRecorderActive = false;
+          updateTextRecordButton();
+          const discardResult = inputRecorderDiscard;
+          inputRecorderDiscard = false;
+          if (discardResult) {
+            inputRecorderChunks = [];
+            setStatus('Ready');
+            return;
+          }
+          if (!blob || !blob.size) {
+            setStatus('Ready');
+            return;
+          }
+          try {
+            if (els.textRecord) els.textRecord.disabled = true;
+            const text = await transcribeRecordedAudio(blob);
+            appendTranscribedText(text);
+            setStatus('Ready');
+          } catch (err) {
+            logError('Text transcription failed', err);
+            setStatus('Error: ' + (err && err.message ? err.message : 'Unable to transcribe audio'));
+          } finally {
+            inputRecorderChunks = [];
+            updateTextRecordButton();
+          }
+        };
+        inputRecorder.start();
+        inputRecorderActive = true;
+        updateTextRecordButton();
+        setStatus('Listening…');
+      } catch (err) {
+        logError('Text recorder failed', err);
+        cleanupInputRecorder(true);
+        setStatus('Error: ' + (err && err.message ? err.message : 'Unable to access microphone'));
+      }
+    }
+
     function teardownRealtimeSession() {
       try {
         if (pc) pc.close();
@@ -457,6 +616,7 @@
 
     function resetCurrentSession(options = {}) {
       teardownRealtimeSession();
+      cleanupInputRecorder(true);
       transcript.length = 0;
       assistantBuffer = '';
       currentAssistantBubble = null;
@@ -1026,6 +1186,10 @@
       els.textInput.value = '';
     });
 
+    els.textRecord?.addEventListener('click', async () => {
+      await toggleTextRecorder();
+    });
+
     // main connect
     els.start.addEventListener('click', async () => {
       try {
@@ -1274,6 +1438,7 @@
       if (els.stop) els.stop.disabled = true;
       if (els.start) els.start.disabled = false;
       if (els.save) els.save.disabled = transcript.length === 0;
+      updateTextRecordButton();
     }
 
     syncResponsiveLayout(true);
