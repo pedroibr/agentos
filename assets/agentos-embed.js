@@ -79,6 +79,10 @@
     }
 
     const els = {
+      shell: $('.agentos-shell', wrap),
+      sidebarToggle: $('.agentos-sidebar-toggle', wrap),
+      sidebarDismiss: $('.agentos-sidebar__dismiss', wrap),
+      sidebarBackdrop: $('.agentos-sidebar-backdrop', wrap),
       start: $('.agentos-bar', wrap).querySelector('.agentos-start'),
       stop:  $('.agentos-bar', wrap).querySelector('.agentos-stop'),
       save:  $('.agentos-bar', wrap).querySelector('.agentos-save'),
@@ -88,7 +92,15 @@
       textInput: $('.agentos-text-input', wrap),
       textSend: $('.agentos-text-send', wrap),
       log: $('.agentos-transcript .agentos-transcript-log', wrap),
-      panel: $('.agentos-transcript', wrap)
+      panel: $('.agentos-transcript', wrap),
+      transcriptHint: $('.agentos-transcript__hint-text', wrap),
+      sessionList: $('.agentos-session-list', wrap),
+      currentSessionButton: $('.agentos-sidebar__new', wrap),
+      workspaceTitle: $('.agentos-voice-stage__workspace-title', wrap),
+      transcriptStatus: $('.agentos-transcript__status', wrap),
+      transcriptTitle: $('.agentos-transcript__title', wrap),
+      sessionSummary: $('.agentos-session-meta__summary', wrap),
+      feedbackContent: $('.agentos-feedback__content', wrap)
     };
     const canRenderTranscript = transcriptEnabled && !!els.log && !!els.panel;
     if (!transcriptEnabled) {
@@ -96,11 +108,15 @@
     } else if (!canRenderTranscript) {
       logWarn('Transcript UI missing; bubbles will not render', { hasLog: !!els.log, hasPanel: !!els.panel });
     }
-    const historyUI = {
-      container: $('.agentos-history__content', wrap),
-      placeholder: $('.agentos-history__placeholder', wrap)
-    };
-    const historyPlaceholderDefault = historyUI.placeholder ? historyUI.placeholder.textContent : '';
+    const feedbackPlaceholderDefault = els.feedbackContent ? els.feedbackContent.textContent : '';
+    const transcriptHintDefault = els.transcriptHint ? els.transcriptHint.textContent : feedbackPlaceholderDefault;
+    const transcriptTail = canRenderTranscript ? document.createElement('div') : null;
+    let transcriptObserver = null;
+
+    if (transcriptTail) {
+      transcriptTail.className = 'agentos-transcript-tail';
+      els.log.appendChild(transcriptTail);
+    }
 
     const modeAttr = wrap.getAttribute('data-mode');
     const mode = modeAttr || cfg.mode || 'voice'; // voice | text | both
@@ -117,7 +133,105 @@
     const historyState = {
       loading: false
     };
+    let savedSessions = [];
+    let selectedSessionId = null;
     let sessionStats = createSessionStats();
+    const compactLayoutQuery = window.matchMedia ? window.matchMedia('(max-width: 1100px)') : null;
+    let sidebarOpen = compactLayoutQuery ? !compactLayoutQuery.matches : true;
+    let lastCompactLayout = compactLayoutQuery ? compactLayoutQuery.matches : false;
+    let layoutRaf = 0;
+
+    function isCompactLayout() {
+      return compactLayoutQuery ? compactLayoutQuery.matches : window.innerWidth <= 1100;
+    }
+
+    function getShellMinHeight() {
+      const width = window.innerWidth || document.documentElement.clientWidth || 0;
+      if (width <= 720) return 440;
+      if (width <= 1100) return 520;
+      return 620;
+    }
+
+    function syncShellHeight() {
+      if (!els.shell) return;
+      const width = window.innerWidth || document.documentElement.clientWidth || 0;
+      if (width <= 720) {
+        wrap.style.removeProperty('--agentos-shell-height');
+        return;
+      }
+      const viewportHeight = Math.round(
+        (window.visualViewport && window.visualViewport.height) ||
+        window.innerHeight ||
+        document.documentElement.clientHeight ||
+        0
+      );
+      const wrapRect = wrap.getBoundingClientRect();
+      const parent = wrap.parentElement;
+      const minHeight = getShellMinHeight();
+      const bottomGap = isCompactLayout() ? 12 : 24;
+      const viewportAvailable = Math.max(0, Math.floor(viewportHeight - Math.max(wrapRect.top, 0) - bottomGap));
+      let targetHeight = Math.max(minHeight, viewportAvailable);
+
+      if (parent && parent !== document.body) {
+        const parentRect = parent.getBoundingClientRect();
+        const shellRect = els.shell.getBoundingClientRect();
+        if (parentRect.height > shellRect.height + 32) {
+          const parentBoundedHeight = viewportAvailable > 0
+            ? Math.min(parentRect.height, viewportAvailable)
+            : parentRect.height;
+          targetHeight = Math.max(minHeight, parentBoundedHeight);
+        }
+      }
+
+      if (!Number.isFinite(targetHeight) || targetHeight <= 0) {
+        wrap.style.removeProperty('--agentos-shell-height');
+        return;
+      }
+
+      wrap.style.setProperty('--agentos-shell-height', Math.round(targetHeight) + 'px');
+    }
+
+    function queueLayoutSync() {
+      if (layoutRaf) {
+        cancelAnimationFrame(layoutRaf);
+      }
+      layoutRaf = requestAnimationFrame(() => {
+        layoutRaf = 0;
+        syncShellHeight();
+      });
+    }
+
+    function updateSidebarControls() {
+      if (!els.sidebarToggle) return;
+      const expanded = sidebarOpen ? 'true' : 'false';
+      els.sidebarToggle.setAttribute('aria-expanded', expanded);
+      els.sidebarToggle.setAttribute(
+        'aria-label',
+        sidebarOpen ? 'Hide conversations sidebar' : 'Show conversations sidebar'
+      );
+    }
+
+    function setSidebarOpen(nextOpen) {
+      sidebarOpen = !!nextOpen;
+      wrap.dataset.sidebarOpen = sidebarOpen ? '1' : '0';
+      updateSidebarControls();
+      queueLayoutSync();
+    }
+
+    function syncResponsiveLayout(forceReset = false) {
+      const compact = isCompactLayout();
+      if (forceReset || compact !== lastCompactLayout) {
+        sidebarOpen = !compact;
+        lastCompactLayout = compact;
+      }
+      setSidebarOpen(sidebarOpen);
+    }
+
+    function closeSidebarIfCompact() {
+      if (isCompactLayout()) {
+        setSidebarOpen(false);
+      }
+    }
 
     function createSessionStats() {
       return {
@@ -203,37 +317,299 @@
       }).catch(err => logError('Usage update failed', err));
     }
 
+    function setSessionState(state) {
+      wrap.dataset.sessionState = state || 'idle';
+    }
+
+    function sessionDisplayTitle(item) {
+      if (!item || !item.created_at) return 'Saved session';
+      return formatTimestamp(item.created_at) || 'Saved session';
+    }
+
+    function sessionSummaryText(item) {
+      if (!item) return 'Current live session';
+      const bits = [];
+      if (item.analysis_status) bits.push(item.analysis_status);
+      if (item.tokens_total) bits.push(item.tokens_total + ' tokens');
+      if (item.duration_seconds) bits.push(item.duration_seconds + 's');
+      return bits.join(' · ') || 'Saved session';
+    }
+
+    function renderFeedback(item) {
+      if (!els.feedbackContent) return;
+      els.feedbackContent.innerHTML = '';
+      const content = document.createElement('p');
+      content.className = item && item.analysis_feedback ? 'agentos-feedback__body' : 'agentos-feedback__placeholder';
+      if (item && item.analysis_feedback) {
+        content.textContent = item.analysis_feedback;
+      } else if (item && item.analysis_status === 'failed' && item.analysis_error) {
+        content.textContent = 'Analysis failed: ' + item.analysis_error;
+      } else if (item && (item.analysis_status === 'queued' || item.analysis_status === 'running')) {
+        content.textContent = 'Analysis in progress…';
+      } else {
+        content.textContent = feedbackPlaceholderDefault || 'Save a session to review transcript analysis here.';
+      }
+      els.feedbackContent.appendChild(content);
+    }
+
+    function setFeedbackMode(mode) {
+      wrap.dataset.feedbackMode = mode === 'panel' ? 'panel' : 'inline';
+      if (mode !== 'panel' && els.transcriptHint) {
+        els.transcriptHint.textContent = transcriptHintDefault || 'Save a session to review transcript analysis here.';
+      }
+    }
+
+    function clearTranscriptLog(options = {}) {
+      if (!canRenderTranscript) return;
+      Array.from(els.log.querySelectorAll('.msg')).forEach((node) => node.remove());
+      if (options.scrollMode === 'top') {
+        autoScrollPinned = false;
+        els.log.scrollTop = 0;
+        return;
+      }
+      autoScrollPinned = true;
+      scheduleScrollToBottom('clearTranscript', { force: true });
+    }
+
+    function renderTranscriptEntries(entries, options = {}) {
+      if (!canRenderTranscript) return;
+      const scrollMode = options.scrollMode || 'bottom';
+      clearTranscriptLog({ scrollMode });
+      if (!Array.isArray(entries)) return;
+      entries.forEach((entry) => {
+        if (!entry || !entry.role) return;
+        addBubble(entry.role, entry.text || '', null, {
+          forceRender: true,
+          suppressScroll: scrollMode === 'top'
+        });
+      });
+      if (scrollMode === 'top') {
+        autoScrollPinned = false;
+        els.log.scrollTop = 0;
+        return;
+      }
+      autoScrollPinned = true;
+      scheduleScrollToBottom('renderTranscriptEntries', { force: true });
+    }
+
+    function renderSessionList() {
+      if (!els.sessionList) return;
+      els.sessionList.innerHTML = '';
+
+      const currentButton = document.createElement('button');
+      currentButton.type = 'button';
+      currentButton.className = 'agentos-session-item' + (!selectedSessionId ? ' is-active' : '');
+      currentButton.innerHTML =
+        '<span class="agentos-session-item__title">Current session</span>' +
+        '<span class="agentos-session-item__meta">' + (sessionActive ? 'Live now' : 'Ready to start') + '</span>' +
+        '<span class="agentos-session-item__summary">' + (transcript.length ? transcript.length + ' messages in progress' : 'No active transcript yet') + '</span>';
+      currentButton.addEventListener('click', activateCurrentSessionView);
+      els.sessionList.appendChild(currentButton);
+
+      if (!savedSessions.length) {
+        const empty = document.createElement('p');
+        empty.className = 'agentos-session-list__empty';
+        empty.textContent = 'Saved sessions will appear here.';
+        els.sessionList.appendChild(empty);
+        return;
+      }
+
+      savedSessions.forEach((item) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'agentos-session-item' + (selectedSessionId === String(item.id) ? ' is-active' : '');
+        button.innerHTML =
+          '<span class="agentos-session-item__title">' + escapeHtml(sessionDisplayTitle(item)) + '</span>' +
+          '<span class="agentos-session-item__meta">' + escapeHtml(sessionSummaryText(item)) + '</span>' +
+          '<span class="agentos-session-item__summary">' + escapeHtml((item.analysis_feedback || '').slice(0, 96) || 'Open to review transcript and feedback') + '</span>';
+        button.addEventListener('click', () => activateSavedSession(item.id));
+        els.sessionList.appendChild(button);
+      });
+    }
+
+    function activateCurrentSessionView() {
+      selectedSessionId = null;
+      setFeedbackMode('inline');
+      if (els.workspaceTitle) els.workspaceTitle.textContent = 'Current session';
+      if (els.transcriptTitle) els.transcriptTitle.textContent = 'Conversation';
+      if (els.transcriptStatus) els.transcriptStatus.textContent = sessionActive ? 'Live' : 'Ready';
+      if (els.sessionSummary) els.sessionSummary.textContent = 'Current live session';
+      renderFeedback(null);
+      renderTranscriptEntries(transcript, { scrollMode: 'bottom' });
+      renderSessionList();
+      closeSidebarIfCompact();
+    }
+
+    function activateSavedSession(sessionId) {
+      const item = savedSessions.find((entry) => String(entry.id) === String(sessionId));
+      if (!item) {
+        activateCurrentSessionView();
+        return;
+      }
+      selectedSessionId = String(item.id);
+      setFeedbackMode('panel');
+      if (els.workspaceTitle) els.workspaceTitle.textContent = sessionDisplayTitle(item);
+      if (els.transcriptTitle) els.transcriptTitle.textContent = 'Saved transcript';
+      if (els.transcriptStatus) els.transcriptStatus.textContent = item.analysis_status || 'Saved';
+      if (els.sessionSummary) els.sessionSummary.textContent = sessionSummaryText(item);
+      renderFeedback(item);
+      renderTranscriptEntries(item.transcript || [], { scrollMode: 'top' });
+      renderSessionList();
+      closeSidebarIfCompact();
+    }
+
     function setStatus(t){
       if (!els.status) return;
       els.status.textContent = t;
       if (!t) {
         delete els.status.dataset.status;
+        setSessionState('idle');
         return;
       }
       const normalized = t.toLowerCase();
       if (normalized.includes('record')) {
         els.status.dataset.status = 'recording';
+        setSessionState('recording');
+      } else if (normalized.includes('connect')) {
+        els.status.dataset.status = 'connected';
+        setSessionState('connected');
+      } else if (normalized.includes('request') || normalized.includes('creating')) {
+        delete els.status.dataset.status;
+        setSessionState('connecting');
       } else {
         delete els.status.dataset.status;
+        setSessionState('idle');
+      }
+      if (!selectedSessionId && els.transcriptStatus) {
+        els.transcriptStatus.textContent = t || 'Ready';
       }
     }
-    function scrollToBottom(){
-      if (!canRenderTranscript) return;
-      els.panel.scrollTop = els.panel.scrollHeight;
+    let scrollRaf = 0;
+    let scrollFlushTimer = 0;
+    let scrollTarget = 0;
+    let scrollSource = 'manual';
+    let scrollForcePending = false;
+    let scrollAnimationActive = false;
+    let autoScrollPinned = true;
+    let lastScrollScheduleAt = 0;
+    const STREAM_SCROLL_THROTTLE_MS = 120;
+    const DEFAULT_SCROLL_THROTTLE_MS = 40;
+    const SCROLL_BOTTOM_THRESHOLD = 72;
+
+    function logScrollMetrics(source) {
+      if (!canRenderTranscript || !loggingEnabled) return;
+      logDebug('Transcript scroll metrics', {
+        source,
+        scrollTop: els.log.scrollTop,
+        clientHeight: els.log.clientHeight,
+        scrollHeight: els.log.scrollHeight,
+        childCount: els.log.children.length
+      });
     }
-    function addBubble(role, text='', beforeEl){
+
+    function isNearTranscriptBottom(threshold = SCROLL_BOTTOM_THRESHOLD) {
+      if (!canRenderTranscript) return true;
+      const remaining = els.log.scrollHeight - (els.log.scrollTop + els.log.clientHeight);
+      return remaining <= threshold;
+    }
+
+    function updateAutoScrollPinned() {
+      autoScrollPinned = isNearTranscriptBottom();
+    }
+
+    function applyScrollPosition(nextTop) {
+      if (!canRenderTranscript) return;
+      scrollAnimationActive = true;
+      els.log.scrollTop = nextTop;
+    }
+
+    function finishScrollAnimation() {
+      if (scrollRaf) {
+        cancelAnimationFrame(scrollRaf);
+        scrollRaf = 0;
+      }
+      scrollAnimationActive = false;
+      updateAutoScrollPinned();
+      logScrollMetrics(scrollSource);
+    }
+
+    function animateScrollStep() {
+      if (!canRenderTranscript) return;
+      const current = els.log.scrollTop;
+      const diff = scrollTarget - current;
+      if (Math.abs(diff) <= 1.5) {
+        applyScrollPosition(scrollTarget);
+        finishScrollAnimation();
+        return;
+      }
+      const step = Math.sign(diff) * Math.max(1.5, Math.min(Math.abs(diff) * 0.22, 34));
+      applyScrollPosition(current + step);
+      scrollRaf = requestAnimationFrame(animateScrollStep);
+    }
+
+    function flushScrollToBottom(source = 'manual', force = false) {
+      if (!canRenderTranscript) return;
+      if (!force && !autoScrollPinned) return;
+      if (scrollFlushTimer) {
+        clearTimeout(scrollFlushTimer);
+        scrollFlushTimer = 0;
+      }
+      scrollSource = source;
+      scrollTarget = Math.max(0, els.log.scrollHeight - els.log.clientHeight);
+      if (Math.abs(scrollTarget - els.log.scrollTop) <= 1.5) {
+        applyScrollPosition(scrollTarget);
+        finishScrollAnimation();
+        return;
+      }
+      if (!scrollRaf) {
+        scrollRaf = requestAnimationFrame(animateScrollStep);
+      }
+    }
+
+    function scheduleScrollToBottom(source = 'manual', options = {}){
+      if (!canRenderTranscript) return;
+      const force = !!options.force;
+      const streaming = !!options.streaming;
+      if (!force && !autoScrollPinned) return;
+      scrollSource = source;
+      scrollForcePending = scrollForcePending || force;
+      const throttleMs = streaming ? STREAM_SCROLL_THROTTLE_MS : DEFAULT_SCROLL_THROTTLE_MS;
+      const now = Date.now();
+      const elapsed = now - lastScrollScheduleAt;
+      if (elapsed >= throttleMs) {
+        lastScrollScheduleAt = now;
+        flushScrollToBottom(source, scrollForcePending);
+        scrollForcePending = false;
+        return;
+      }
+      if (scrollFlushTimer) {
+        clearTimeout(scrollFlushTimer);
+      }
+      scrollFlushTimer = setTimeout(() => {
+        scrollFlushTimer = 0;
+        lastScrollScheduleAt = Date.now();
+        flushScrollToBottom(scrollSource, scrollForcePending);
+        scrollForcePending = false;
+      }, throttleMs - elapsed);
+    }
+
+    function addBubble(role, text='', beforeEl, options = {}){
       if (!canRenderTranscript) return null;
+      if (selectedSessionId && !options.forceRender) return null;
       const div = document.createElement('div');
       div.className = 'msg ' + (role==='assistant'?'assistant':'user');
-      div.style.cssText = 'max-width:90%;margin:6px 0;padding:10px 12px;border-radius:12px;white-space:pre-wrap;'+
-                          (role==='assistant'?'background:#f6f8ff;border:1px solid #e7ebff;margin-left:auto':'background:#f7f7f7;border:1px solid #eee');
       div.innerHTML = escapeHtml(text);
+      const insertTarget = transcriptTail && transcriptTail.parentNode === els.log ? transcriptTail : null;
       if (beforeEl && beforeEl.parentNode === els.log) {
         els.log.insertBefore(div, beforeEl);
+      } else if (insertTarget) {
+        els.log.insertBefore(div, insertTarget);
       } else {
         els.log.appendChild(div);
       }
-      scrollToBottom();
+      if (!options.suppressScroll) {
+        scheduleScrollToBottom('addBubble', { force: !!options.forceRender });
+      }
       return div;
     }
 
@@ -258,7 +634,7 @@
       assistantBuffer += delta;
       if (currentAssistantBubble) {
         currentAssistantBubble.innerHTML += escapeHtml(delta);
-        scrollToBottom();
+        scheduleScrollToBottom('assistantDelta', { streaming: true });
       }
       clearTimeout(assistantIdleTimer);
       assistantIdleTimer = setTimeout(commitAssistant, 1200);
@@ -271,6 +647,7 @@
         transcript.push({ role:'assistant', text: trimmed });
         lastAssistantText = trimmed;
       }
+      scheduleScrollToBottom('assistantCommit');
       assistantBuffer = ''; currentAssistantBubble = null;
     }
 
@@ -312,7 +689,7 @@
       userBuffer += delta;
       if (currentUserBubble) {
         currentUserBubble.innerHTML += escapeHtml(delta);
-        scrollToBottom();
+        scheduleScrollToBottom('userRealtimeDelta', { streaming: true });
       }
       clearTimeout(userIdleTimer);
       userIdleTimer = setTimeout(commitUserFromRealtime, 1200);
@@ -329,6 +706,7 @@
           transcript.push({ role:'user', text: trimmed });
         }
       }
+      scheduleScrollToBottom('userCommit');
       userBuffer = ''; currentUserBubble = null;
     }
 
@@ -461,7 +839,7 @@
         if (!bubble && canRenderTranscript) bubble = addBubble('user','');
         if (bubble) {
           bubble.innerHTML = escapeHtml((finalText + interim).trim());
-          scrollToBottom();
+          scheduleScrollToBottom('browserStt', { streaming: true });
         }
         if (finalText.trim()){
           const trimmed = finalText.trim();
@@ -567,7 +945,7 @@
         await pc.setRemoteDescription({ type:'answer', sdp: answerSdp });
         await waitForOpen(dc);
 
-        setStatus('Connected ✅');
+        setStatus('Connected');
 
         // Inject optional user-supplied context
         const contextBlocks = [];
@@ -589,6 +967,7 @@
         }
         logInfo('Session ready', { model: activeModel, voice: activeVoice });
         sessionActive = true;
+        activateCurrentSessionView();
         sendUsageUpdate('running', 'started');
 
       } catch (e) {
@@ -599,6 +978,7 @@
         sendUsageUpdate('pending', 'error');
         SESSION_ID = null;
         resetSessionStats();
+        activateCurrentSessionView();
       }
     });
 
@@ -612,9 +992,10 @@
         els.stop.disabled = true;
         els.start.disabled = false;
         if (els.save) els.save.disabled = transcript.length === 0;
-        setStatus('Disconnected.');
+        setStatus('Disconnected');
         if (typeof commitAssistant === 'function') commitAssistant();
         sessionActive = false;
+        activateCurrentSessionView();
         sendUsageUpdate('final', 'ended', true);
       }
     });
@@ -646,85 +1027,26 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data?.message || 'Save failed');
         setStatus('Transcript saved (id '+data.id+')');
-        if (analysisEnabled) loadHistory();
+        await loadHistory(String(data.id));
         await sendUsageUpdate('final', 'saved', true);
         SESSION_ID = null;
         resetSessionStats();
         sessionActive = false;
+        setSessionState('idle');
       } catch (e) {
         logError('Save failed', e);
         setStatus('Save error: ' + (e && e.message ? e.message : ''));
       }
     });
 
-    const statusLabels = {
-      queued: 'Queued',
-      running: 'Running',
-      succeeded: 'Completed',
-      failed: 'Failed',
-      idle: 'Idle'
-    };
-
-    function renderHistory(items) {
-      if (!historyUI.container) return;
-      historyUI.container.innerHTML = '';
-
-      if (!Array.isArray(items) || items.length === 0) {
-        if (historyUI.placeholder) {
-          historyUI.placeholder.textContent = historyPlaceholderDefault || 'Save a session to see feedback summaries here.';
-          historyUI.placeholder.style.display = '';
-        }
-        return;
-      }
-
-      if (historyUI.placeholder) {
-        historyUI.placeholder.style.display = 'none';
-      }
-
-      items.forEach(item => {
-        const block = document.createElement('div');
-        block.className = 'agentos-history__item';
-
-        const meta = document.createElement('div');
-        meta.className = 'agentos-history__meta';
-        const bits = [];
-        const createdLabel = formatTimestamp(item.created_at);
-        if (createdLabel) bits.push('Saved ' + createdLabel);
-        const status = item.analysis_status || 'idle';
-        const completedLabel = formatTimestamp(item.analysis_completed_at);
-        if (status === 'succeeded' && completedLabel) {
-          bits.push('Analyzed ' + completedLabel);
-        } else {
-          bits.push(statusLabels[status] || status);
-        }
-        meta.textContent = bits.join(' · ');
-        block.appendChild(meta);
-
-        const feedback = document.createElement('div');
-        feedback.className = 'agentos-history__feedback';
-        if (item.analysis_feedback) {
-          feedback.textContent = item.analysis_feedback;
-        } else if (status === 'failed' && item.analysis_error) {
-          feedback.textContent = 'Analysis failed: ' + item.analysis_error;
-        } else if (status === 'queued' || status === 'running') {
-          feedback.textContent = 'Analysis in progress…';
-        } else {
-          feedback.textContent = 'Analysis not requested yet.';
-        }
-        block.appendChild(feedback);
-
-        historyUI.container.appendChild(block);
-      });
-    }
-
-    async function loadHistory() {
-      if (!analysisEnabled || !historyUI.container || historyState.loading) return;
+    async function loadHistory(preferredSessionId = null) {
+      if (!els.sessionList || historyState.loading) return;
       historyState.loading = true;
       try {
         const params = new URLSearchParams({
           post_id: String(postId),
           agent_id: agentId,
-          limit: '5',
+          limit: '20',
           anon_id: getAnonId()
         });
         const res = await fetch(restBase + '/transcript-db?' + params.toString(), {
@@ -735,21 +1057,71 @@
           throw new Error('History request failed (' + res.status + ')');
         }
         const json = await res.json();
-        renderHistory(json);
+        savedSessions = Array.isArray(json) ? json : [];
+        if (preferredSessionId) {
+          activateSavedSession(preferredSessionId);
+        } else if (selectedSessionId) {
+          activateSavedSession(selectedSessionId);
+        } else {
+          renderSessionList();
+        }
       } catch (err) {
         logError('History load failed', err);
-        if (historyUI.placeholder) {
-          historyUI.placeholder.textContent = historyPlaceholderDefault || 'Unable to load previous feedback right now.';
-          historyUI.placeholder.style.display = '';
-        }
+        renderSessionList();
       } finally {
         historyState.loading = false;
       }
     }
 
-    if (analysisEnabled) {
-      loadHistory();
+    els.currentSessionButton?.addEventListener('click', activateCurrentSessionView);
+    els.sidebarToggle?.addEventListener('click', () => {
+      setSidebarOpen(!sidebarOpen);
+    });
+    els.sidebarDismiss?.addEventListener('click', () => {
+      setSidebarOpen(false);
+    });
+    els.sidebarBackdrop?.addEventListener('click', () => {
+      setSidebarOpen(false);
+    });
+    window.addEventListener('resize', () => {
+      syncResponsiveLayout();
+      queueLayoutSync();
+    });
+    window.visualViewport?.addEventListener('resize', queueLayoutSync);
+    if (typeof ResizeObserver !== 'undefined' && wrap.parentElement) {
+      const layoutObserver = new ResizeObserver(() => {
+        queueLayoutSync();
+      });
+      layoutObserver.observe(wrap.parentElement);
     }
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && sidebarOpen && isCompactLayout()) {
+        setSidebarOpen(false);
+      }
+    });
+
+    loadHistory();
+
+    if (canRenderTranscript && typeof MutationObserver !== 'undefined') {
+      els.log.addEventListener('scroll', () => {
+        if (scrollAnimationActive) return;
+        updateAutoScrollPinned();
+      }, { passive: true });
+      transcriptObserver = new MutationObserver(() => {
+        scheduleScrollToBottom('mutationObserver', { streaming: true });
+      });
+      transcriptObserver.observe(els.log, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+      logDebug('Transcript observer attached');
+    }
+
+    syncResponsiveLayout(true);
+    setSessionState('idle');
+    activateCurrentSessionView();
+    queueLayoutSync();
   });
 
   window.addEventListener('beforeunload', () => {
