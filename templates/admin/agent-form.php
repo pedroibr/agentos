@@ -75,6 +75,38 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
         </td>
       </tr>
       <tr>
+        <th scope="row"><?php esc_html_e('Show post image in sidebar', 'agentos'); ?></th>
+        <td>
+          <label>
+            <input type="checkbox" name="agent[show_post_image]" value="1" <?php checked(!empty($agent['show_post_image'])); ?>>
+            <?php esc_html_e('Display the current post featured image above the conversations list.', 'agentos'); ?>
+          </label>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><?php esc_html_e('Show post title in sidebar', 'agentos'); ?></th>
+        <td>
+          <label>
+            <input type="checkbox" name="agent[show_post_title]" value="1" <?php checked(!empty($agent['show_post_title'])); ?>>
+            <?php esc_html_e('Display the current post title below the sidebar image or by itself when no image is shown.', 'agentos'); ?>
+          </label>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><label for="agentos-sidebar-back-url"><?php esc_html_e('Sidebar back URL', 'agentos'); ?></label></th>
+        <td>
+          <input type="url" id="agentos-sidebar-back-url" name="agent[sidebar_back_url]" value="<?php echo esc_attr($agent['sidebar_back_url'] ?? ''); ?>" class="regular-text" style="width:420px">
+          <p class="description"><?php esc_html_e('Optional link shown at the bottom of the sidebar.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><label for="agentos-sidebar-back-label"><?php esc_html_e('Sidebar back label', 'agentos'); ?></label></th>
+        <td>
+          <input type="text" id="agentos-sidebar-back-label" name="agent[sidebar_back_label]" value="<?php echo esc_attr($agent['sidebar_back_label'] ?? ''); ?>" class="regular-text">
+          <p class="description"><?php esc_html_e('Optional label for the sidebar back link. Defaults to “Go back”.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
         <th scope="row"><?php esc_html_e('Show transcript panel', 'agentos'); ?></th>
         <td>
           <label>
