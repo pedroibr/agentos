@@ -71,6 +71,16 @@ class RestController
 
         register_rest_route(
             'agentos/v1',
+            '/text-transcription',
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'permission_callback' => [$this, 'permissionNonce'],
+                'callback' => [$this, 'routeTextTranscription'],
+            ]
+        );
+
+        register_rest_route(
+            'agentos/v1',
             '/transcript-db',
             [
                 'methods' => WP_REST_Server::CREATABLE,
@@ -588,6 +598,75 @@ class RestController
         ];
     }
 
+    public function routeTextTranscription(WP_REST_Request $request)
+    {
+        $postId = intval($request->get_param('post_id') ?: 0);
+        $agentId = sanitize_key($request->get_param('agent_id') ?: '');
+        $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
+        $language = sanitize_text_field($request->get_param('language') ?: '');
+
+        if (!$postId) {
+            return new WP_Error('no_post', __('post_id required', 'agentos'), ['status' => 400]);
+        }
+
+        if (!$agentId) {
+            return new WP_Error('no_agent', __('agent_id required', 'agentos'), ['status' => 400]);
+        }
+
+        $post = get_post($postId);
+        if (!$post || $post->post_status === 'trash') {
+            return new WP_Error('invalid_post', __('Post not found.', 'agentos'), ['status' => 404]);
+        }
+
+        if (post_password_required($post)) {
+            return new WP_Error('forbidden_post', __('You do not have access to this content.', 'agentos'), ['status' => 403]);
+        }
+
+        if (!current_user_can('read_post', $postId) && !is_post_publicly_viewable($post)) {
+            return new WP_Error('forbidden_post', __('You do not have access to this content.', 'agentos'), ['status' => 403]);
+        }
+
+        $agent = $this->agents->get($agentId);
+        if (!$agent) {
+            return new WP_Error('invalid_agent', __('Agent not found', 'agentos'), ['status' => 404]);
+        }
+
+        $postType = get_post_type($postId);
+        if ($agent['post_types'] && !in_array($postType, $agent['post_types'], true)) {
+            return new WP_Error('agent_unavailable', __('Agent not available for this post type.', 'agentos'), ['status' => 403]);
+        }
+
+        $userKey = $this->resolveUserKey($anonId);
+        $limitResult = $this->limiter->evaluate($userKey, $agent);
+        if (empty($limitResult['allowed'])) {
+            $status = isset($limitResult['status']) ? (int) $limitResult['status'] : 402;
+            $messageText = $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos');
+            $code = $limitResult['error_code'] ?? 'subscription_limit';
+            return new WP_Error($code, $messageText, ['status' => $status]);
+        }
+
+        $files = $request->get_file_params();
+        $audio = $files['audio'] ?? null;
+        if (!is_array($audio) || empty($audio['tmp_name']) || !is_uploaded_file($audio['tmp_name'])) {
+            return new WP_Error('missing_audio', __('An audio file upload is required.', 'agentos'), ['status' => 400]);
+        }
+
+        $apiKey = $this->settings->resolveApiKey();
+        if (!$apiKey) {
+            return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
+        }
+
+        $response = $this->requestAudioTranscription($audio, $apiKey, $language);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        return [
+            'text' => $response['text'],
+            'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
+        ];
+    }
+
     public function routeTranscriptSave(WP_REST_Request $request)
     {
         $postId = intval($request->get_param('post_id') ?: 0);
@@ -864,6 +943,64 @@ class RestController
         }
 
         return trim(implode('', $parts));
+    }
+
+    private function requestAudioTranscription(array $audio, string $apiKey, string $language = '')
+    {
+        if (!function_exists('curl_init') || !function_exists('curl_file_create')) {
+            return new WP_Error(
+                'curl_missing',
+                __('cURL is required on the server to transcribe audio uploads.', 'agentos'),
+                ['status' => 500]
+            );
+        }
+
+        $mime = !empty($audio['type']) ? sanitize_text_field($audio['type']) : 'audio/webm';
+        $filename = !empty($audio['name']) ? sanitize_file_name($audio['name']) : 'recording.webm';
+        $file = curl_file_create($audio['tmp_name'], $mime, $filename);
+
+        $postFields = [
+            'file' => $file,
+            'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
+        ];
+        if ($language !== '') {
+            $postFields['language'] = $language;
+        }
+
+        $ch = curl_init('https://api.openai.com/v1/audio/transcriptions');
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $apiKey,
+            ],
+            CURLOPT_POSTFIELDS => $postFields,
+            CURLOPT_TIMEOUT => 60,
+        ]);
+
+        $body = curl_exec($ch);
+        if ($body === false) {
+            $error = curl_error($ch);
+            curl_close($ch);
+            return new WP_Error('openai_transport', $error ?: __('Audio transcription failed.', 'agentos'), ['status' => 500]);
+        }
+
+        $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+
+        $json = json_decode((string) $body, true);
+        if ($code >= 400 || !is_array($json)) {
+            return new WP_Error('openai_http', (string) $body ?: __('Unknown error', 'agentos'), ['status' => $code ?: 500]);
+        }
+
+        $text = trim((string) ($json['text'] ?? ''));
+        if ($text === '') {
+            return new WP_Error('openai_empty', __('The transcription service returned empty text.', 'agentos'), ['status' => 502]);
+        }
+
+        return [
+            'text' => $text,
+        ];
     }
 
     private function checkNonce(WP_REST_Request $request): bool

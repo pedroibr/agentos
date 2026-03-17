@@ -4,7 +4,7 @@ namespace AgentOS\Core;
 
 class Config
 {
-    public const VERSION = '10.1.3';
+    public const VERSION = '10.1.4';
 
     public const OPTION_SETTINGS = 'agentos_settings';
     public const OPTION_AGENTS   = 'agentos_agents';
@@ -15,6 +15,7 @@ class Config
     public const FALLBACK_MODEL  = 'gpt-realtime-mini-2025-10-06';
     public const FALLBACK_REALTIME_MODEL = self::FALLBACK_MODEL;
     public const FALLBACK_TEXT_MODEL = 'gpt-4.1-mini';
+    public const FALLBACK_TRANSCRIBE_MODEL = 'gpt-4o-mini-transcribe';
     public const FALLBACK_VOICE  = 'alloy';
     public const FALLBACK_PROMPT = 'You are a helpful, concise AI agent. Speak naturally.';
 
