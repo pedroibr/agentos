@@ -148,6 +148,10 @@ class AdminController
             true
         );
 
+        if (empty($agent['context_params']) && !empty($settings['context_params'])) {
+            $agent['context_params'] = (array) $settings['context_params'];
+        }
+
         wp_enqueue_script('agentos-admin');
     }
 

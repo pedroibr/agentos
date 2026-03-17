@@ -58,6 +58,13 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
         </td>
       </tr>
       <tr>
+        <th scope="row"><label for="agentos-context-params"><?php esc_html_e('Allowed URL context parameters', 'agentos'); ?></label></th>
+        <td>
+          <input type="text" id="agentos-context-params" name="agent[context_params]" value="<?php echo esc_attr(implode(',', $agent['context_params'] ?? [])); ?>" class="regular-text" style="width:420px">
+          <p class="description"><?php esc_html_e('Comma separated list of query-string parameters this agent can read from the current URL.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
         <th scope="row"><?php esc_html_e('Show transcript panel', 'agentos'); ?></th>
         <td>
           <label>

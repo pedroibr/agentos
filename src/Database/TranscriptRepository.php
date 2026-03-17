@@ -28,6 +28,7 @@ class TranscriptRepository
       user_email VARCHAR(190) DEFAULT '',
       user_key VARCHAR(190) DEFAULT '',
       subscription_slug VARCHAR(64) DEFAULT '',
+      context_json LONGTEXT,
       user_agent TEXT,
       transcript LONGTEXT,
       analysis_status VARCHAR(20) NOT NULL DEFAULT 'idle',
@@ -74,6 +75,7 @@ class TranscriptRepository
                 'user_email' => $payload['user_email'],
                 'user_key' => $payload['user_key'] ?? '',
                 'subscription_slug' => $payload['subscription_slug'] ?? '',
+                'context_json' => wp_json_encode($payload['context'] ?? []),
                 'user_agent' => $payload['user_agent'],
                 'transcript' => wp_json_encode($payload['transcript']),
                 'analysis_status' => $payload['analysis_status'] ?? 'idle',
@@ -115,6 +117,10 @@ class TranscriptRepository
         }
 
         $row['transcript'] = json_decode($row['transcript'], true);
+        $row['context'] = json_decode($row['context_json'] ?? '[]', true);
+        if (!is_array($row['context'])) {
+            $row['context'] = [];
+        }
         return $row;
     }
 
@@ -408,6 +414,10 @@ class TranscriptRepository
 
         return array_map(static function ($row) {
             $row['transcript'] = json_decode($row['transcript'], true);
+            $row['context'] = json_decode($row['context_json'] ?? '[]', true);
+            if (!is_array($row['context'])) {
+                $row['context'] = [];
+            }
             $row['analysis_attempts'] = isset($row['analysis_attempts']) ? (int) $row['analysis_attempts'] : 0;
             if (!isset($row['analysis_status'])) {
                 $row['analysis_status'] = 'idle';

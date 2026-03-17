@@ -328,12 +328,13 @@ class RestController
             return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
         }
 
-        $settings = $this->settings->get();
         $ctxIn = $request->get_param('ctx');
         $ctxPairs = [];
+        $contextData = [];
 
         if (is_array($ctxIn)) {
-            $allowed = $settings['context_params'] ?? [];
+            $settings = $this->settings->get();
+            $allowed = !empty($agent['context_params']) ? (array) $agent['context_params'] : (array) ($settings['context_params'] ?? []);
             foreach ($ctxIn as $key => $value) {
                 if (!in_array($key, $allowed, true)) {
                     continue;
@@ -342,6 +343,7 @@ class RestController
                 $cleanValue = sanitize_text_field($value);
                 if ($cleanKey && $cleanValue !== '') {
                     $ctxPairs[] = "{$cleanKey}={$cleanValue}";
+                    $contextData[$cleanKey] = $cleanValue;
                 }
             }
         }
@@ -401,6 +403,7 @@ class RestController
             'session_cap' => $sessionCap,
             'warnings' => $limitResult['warnings'] ?? [],
             'session_id' => $sessionId,
+            'context' => $contextData,
         ];
     }
 
@@ -419,6 +422,7 @@ class RestController
         $tokensText = intval($request->get_param('tokens_text') ?: 0);
         $tokensTotal = intval($request->get_param('tokens_total') ?: 0);
         $durationSeconds = intval($request->get_param('duration_seconds') ?: 0);
+        $contextPayload = $request->get_param('context');
 
         $currentUser = wp_get_current_user();
         $userEmail = '';
@@ -440,6 +444,23 @@ class RestController
         $analysisEnabled = !empty($agent['analysis_enabled']);
         $analysisAuto = !empty($agent['analysis_auto_run']);
         $analysisModel = sanitize_text_field($agent['analysis_model'] ?? '');
+        $context = [];
+
+        if (is_array($contextPayload)) {
+            $settings = $this->settings->get();
+            $allowed = !empty($agent['context_params']) ? (array) $agent['context_params'] : (array) ($settings['context_params'] ?? []);
+            foreach ($contextPayload as $key => $value) {
+                if (!in_array($key, $allowed, true)) {
+                    continue;
+                }
+
+                $cleanKey = preg_replace('/[^a-z0-9_\-]/i', '', (string) $key);
+                $cleanValue = sanitize_text_field($value);
+                if ($cleanKey && $cleanValue !== '') {
+                    $context[$cleanKey] = $cleanValue;
+                }
+            }
+        }
 
         $id = $this->transcripts->insert([
             'post_id' => $postId,
@@ -458,6 +479,7 @@ class RestController
             'tokens_text' => max(0, $tokensText),
             'tokens_total' => max(0, $tokensTotal),
             'duration_seconds' => max(0, $durationSeconds),
+            'context' => $context,
         ]);
 
         if (!$id) {

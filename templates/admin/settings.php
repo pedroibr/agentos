@@ -27,13 +27,6 @@ if (!defined('ABSPATH')) {
         </td>
       </tr>
       <tr>
-        <th scope="row"><?php esc_html_e('Context parameters (query-string)', 'agentos'); ?></th>
-        <td>
-          <input type="text" style="width:420px" name="<?php echo esc_attr($option_key); ?>[context_params]" value="<?php echo esc_attr(implode(',', $settings['context_params'] ?? ['nome','produto','etapa'])); ?>">
-          <p class="description"><?php esc_html_e('Comma separated list of URL parameters passed through to the agent.', 'agentos'); ?></p>
-        </td>
-      </tr>
-      <tr>
         <th scope="row"><?php esc_html_e('Enable console logging', 'agentos'); ?></th>
         <td>
           <label>

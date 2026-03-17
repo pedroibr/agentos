@@ -23,6 +23,7 @@ $analysisModel = $row['analysis_model'] ?: ($agent['analysis_model'] ?? '');
 $analysisPrompt = $row['analysis_prompt'] ?? '';
 $analysisError = $row['analysis_error'] ?? '';
 $analysisFeedback = $row['analysis_feedback'] ?? '';
+$context = isset($row['context']) && is_array($row['context']) ? $row['context'] : [];
 $backUrl = add_query_arg(['page' => 'agentos-sessions'], admin_url('admin.php'));
 $postEdit = $post ? get_edit_post_link($post) : '';
 
@@ -142,6 +143,22 @@ $postEdit = $post ? get_edit_post_link($post) : '';
     </div>
 
     <div style="flex:1;min-width:320px;">
+      <h2><?php esc_html_e('Context', 'agentos'); ?></h2>
+      <?php if (!empty($context)) : ?>
+        <table class="widefat striped" style="margin-bottom:24px;">
+          <tbody>
+            <?php foreach ($context as $key => $value) : ?>
+              <tr>
+                <th scope="row" style="width:35%;"><?php echo esc_html($key); ?></th>
+                <td><?php echo esc_html($value); ?></td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      <?php else : ?>
+        <p><?php esc_html_e('No URL context parameters were recorded for this session.', 'agentos'); ?></p>
+      <?php endif; ?>
+
       <h2><?php esc_html_e('Analysis feedback', 'agentos'); ?></h2>
       <?php if ($status === 'running' || $status === 'queued') : ?>
         <p><?php esc_html_e('Analysis in progress. Refresh to see the latest feedback.', 'agentos'); ?></p>
