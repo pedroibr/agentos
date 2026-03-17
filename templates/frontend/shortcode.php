@@ -22,6 +22,19 @@
       id="agentos-sidebar-<?php echo esc_attr($agentData['slug']); ?>"
       class="agentos-sidebar"
       aria-label="<?php esc_attr_e('Saved conversations', 'agentos'); ?>">
+      <?php if (!empty($sidebarImageUrl) || (!empty($agentData['show_post_title']) && !empty($sidebarPostTitle))) : ?>
+        <div class="agentos-sidebar__post-card">
+          <?php if (!empty($sidebarImageUrl)) : ?>
+            <img
+              class="agentos-sidebar__post-image"
+              src="<?php echo esc_url($sidebarImageUrl); ?>"
+              alt="<?php echo esc_attr($sidebarImageAlt ?: $sidebarPostTitle); ?>">
+          <?php endif; ?>
+          <?php if (!empty($agentData['show_post_title']) && !empty($sidebarPostTitle)) : ?>
+            <div class="agentos-sidebar__post-title"><?php echo esc_html($sidebarPostTitle); ?></div>
+          <?php endif; ?>
+        </div>
+      <?php endif; ?>
       <div class="agentos-sidebar__header">
         <div class="agentos-sidebar__topbar">
           <div>
@@ -42,6 +55,13 @@
       <div class="agentos-session-list" role="list">
         <p class="agentos-session-list__empty"><?php esc_html_e('Saved sessions will appear here.', 'agentos'); ?></p>
       </div>
+      <?php if (!empty($sidebarBackUrl)) : ?>
+        <div class="agentos-sidebar__footer">
+          <a class="agentos-sidebar__back-link" href="<?php echo esc_url($sidebarBackUrl); ?>">
+            &lt; <?php echo esc_html($sidebarBackLabel); ?>
+          </a>
+        </div>
+      <?php endif; ?>
     </aside>
     <button
       class="agentos-sidebar-backdrop"
@@ -130,7 +150,7 @@
               <textarea
                 id="agentos-text-input-<?php echo esc_attr($agentData['slug']); ?>"
                 class="agentos-text-input"
-                placeholder="<?php esc_attr_e('Message AgentOS', 'agentos'); ?>"
+                placeholder="<?php esc_attr_e('Write your message', 'agentos'); ?>"
                 rows="3"></textarea>
               <div class="agentos-composer__actions">
                 <button class="agentos-btn agentos-btn--ghost agentos-text-record" type="button">

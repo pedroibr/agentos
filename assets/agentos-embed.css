@@ -89,6 +89,27 @@
   gap: 12px;
 }
 
+.agentos-sidebar__post-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agentos-sidebar__post-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 14px;
+  background: var(--agentos-surface-muted);
+}
+
+.agentos-sidebar__post-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--agentos-text);
+}
+
 .agentos-sidebar__topbar {
   display: flex;
   justify-content: space-between;
@@ -203,6 +224,7 @@
   flex-direction: column;
   gap: 8px;
   overflow-y: auto;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -244,6 +266,26 @@
 .agentos-session-item__summary {
   color: var(--agentos-text-muted);
   font-size: 0.84rem;
+}
+
+.agentos-sidebar__footer {
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.agentos-sidebar__back-link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--agentos-text-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agentos-sidebar__back-link:hover {
+  color: var(--agentos-text);
 }
 
 .agentos-workspace {

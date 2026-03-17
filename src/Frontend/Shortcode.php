@@ -98,6 +98,21 @@ class Shortcode
         $modeValue = $mode;
         $heightValue = $height;
         $transcriptEnabled = !empty($agent['show_transcript']);
+        $sidebarImageUrl = '';
+        $sidebarImageAlt = '';
+        if (!empty($agent['show_post_image']) && has_post_thumbnail($postId)) {
+            $sidebarImageUrl = (string) get_the_post_thumbnail_url($postId, 'medium_large');
+            $sidebarImageAlt = (string) get_post_meta((int) get_post_thumbnail_id($postId), '_wp_attachment_image_alt', true);
+            if ($sidebarImageAlt === '') {
+                $sidebarImageAlt = (string) get_the_title($postId);
+            }
+        }
+        $sidebarPostTitle = (string) get_the_title($postId);
+        $sidebarBackUrl = !empty($agent['sidebar_back_url']) ? esc_url_raw($agent['sidebar_back_url']) : '';
+        $sidebarBackLabel = trim((string) ($agent['sidebar_back_label'] ?? ''));
+        if ($sidebarBackLabel === '') {
+            $sidebarBackLabel = __('Go back', 'agentos');
+        }
 
         ob_start();
         include $template;

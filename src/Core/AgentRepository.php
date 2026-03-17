@@ -16,6 +16,10 @@ class AgentRepository
             'default_voice' => Config::FALLBACK_VOICE,
             'base_prompt' => '',
             'context_params' => [],
+            'show_post_image' => false,
+            'show_post_title' => false,
+            'sidebar_back_url' => '',
+            'sidebar_back_label' => '',
             'post_types' => [],
             'field_maps' => [],
             'show_transcript' => true,
@@ -139,6 +143,11 @@ class AgentRepository
         $agent['context_params'] = array_values(array_filter(array_map(static function ($key) {
             return preg_replace('/[^a-z0-9_\-]/i', '', (string) $key);
         }, $contextParams)));
+
+        $agent['show_post_image'] = !empty($input['show_post_image']);
+        $agent['show_post_title'] = !empty($input['show_post_title']);
+        $agent['sidebar_back_url'] = esc_url_raw($input['sidebar_back_url'] ?? '');
+        $agent['sidebar_back_label'] = sanitize_text_field($input['sidebar_back_label'] ?? '');
 
         $agent['show_transcript'] = !empty($input['show_transcript']);
 

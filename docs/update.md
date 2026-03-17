@@ -1,6 +1,7 @@
 [YYYY-MM-DD] Initial scaffold created via Codex.
 [2025-10-20] Secured REST endpoints, fixed context param parsing, improved frontend session handling.
 [2025-10-21] Added multi-agent admin UI, per-agent shortcode/REST flow, and removed hard-coded lesson fields.
+[2026-03-17][v10.1.5] Added optional sidebar post presentation controls per agent, including post image, post title, and a configurable back link inside the embed sidebar, and updated the text composer placeholder to use a more neutral prompt.
 [2026-03-17][v10.1.4] Added text-mode voice recording to the composer using MediaRecorder and backend transcription, introduced a secure transcription endpoint for uploading audio to OpenAI, and surfaced the transcribed text in the message input without altering the existing realtime voice workflow.
 [2026-03-17][v10.1.3] Split text-only conversations onto the OpenAI Responses API with dedicated text/realtime model settings per agent, kept voice on the Realtime API, fixed multi-turn text history formatting, and improved session UX so saving ends the current session and New chat fully resets it.
 [2026-03-17][v10.1.2] Moved URL context parameter configuration from global settings to each agent, persisted the validated session context with saved transcripts, and surfaced those values in the Sessions detail view under the Context block while preserving fallback support for older agents.
