@@ -128,6 +128,7 @@
     let activeModel = '', activeVoice = '';
     let activeSubscription = '';
     let activeSessionCap = sessionTokenCapDefault;
+    let activeContext = {};
     let sessionActive = false;
     const transcript = []; // [{role,text}]
     const historyState = {
@@ -795,6 +796,7 @@
       logDebug('Token payload', json);
       activeSubscription = json.subscription || '';
       activeSessionCap = json.session_cap || sessionTokenCapDefault;
+      activeContext = json.context && typeof json.context === 'object' ? json.context : {};
       if (Array.isArray(json.warnings) && json.warnings.length) {
         logInfo('Subscription warnings', json.warnings);
       }
@@ -997,6 +999,7 @@
         sessionActive = false;
         activateCurrentSessionView();
         sendUsageUpdate('final', 'ended', true);
+        activeContext = {};
       }
     });
 
@@ -1012,6 +1015,7 @@
           model: activeModel || '',
           voice: activeVoice || '',
           subscription_slug: activeSubscription || '',
+          context: activeContext || {},
           user_agent: navigator.userAgent,
           transcript,
           tokens_realtime: sessionStats.tokensRealtime,
@@ -1030,6 +1034,7 @@
         await loadHistory(String(data.id));
         await sendUsageUpdate('final', 'saved', true);
         SESSION_ID = null;
+        activeContext = {};
         resetSessionStats();
         sessionActive = false;
         setSessionState('idle');

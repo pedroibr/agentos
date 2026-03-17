@@ -13,6 +13,7 @@ class AgentRepository
             'default_model' => Config::FALLBACK_MODEL,
             'default_voice' => Config::FALLBACK_VOICE,
             'base_prompt' => '',
+            'context_params' => [],
             'post_types' => [],
             'field_maps' => [],
             'show_transcript' => true,
@@ -120,6 +121,15 @@ class AgentRepository
         $agent['default_mode'] = in_array($mode, ['voice', 'text', 'both'], true) ? $mode : 'voice';
 
         $agent['base_prompt'] = sanitize_textarea_field($input['base_prompt'] ?? '');
+
+        $contextParams = $input['context_params'] ?? [];
+        if (is_string($contextParams)) {
+            $contextParams = array_map('trim', explode(',', $contextParams));
+        }
+        $contextParams = (array) $contextParams;
+        $agent['context_params'] = array_values(array_filter(array_map(static function ($key) {
+            return preg_replace('/[^a-z0-9_\-]/i', '', (string) $key);
+        }, $contextParams)));
 
         $agent['show_transcript'] = !empty($input['show_transcript']);
 

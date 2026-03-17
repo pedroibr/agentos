@@ -1,6 +1,7 @@
 [YYYY-MM-DD] Initial scaffold created via Codex.
 [2025-10-20] Secured REST endpoints, fixed context param parsing, improved frontend session handling.
 [2025-10-21] Added multi-agent admin UI, per-agent shortcode/REST flow, and removed hard-coded lesson fields.
+[2026-03-17][v10.1.2] Moved URL context parameter configuration from global settings to each agent, persisted the validated session context with saved transcripts, and surfaced those values in the Sessions detail view under the Context block while preserving fallback support for older agents.
 [2026-03-17][v10.1.1] Standardized the AgentOS admin list screens to feel more native to WordPress by making item names directly clickable, moving actions into row actions, adding bulk delete support for agents, subscriptions, users, and sessions, and wiring transcript/session deletion into the admin workflow.
 [2026-03-17][v10.1] Added an external Integration API with Bearer authentication for AgentOS user provisioning and subscription management, exposed aggregate usage/user data for automations, added integration API key controls to Settings, and documented the new endpoints and auth flow.
 [2025-10-20 14:35][v0.3.0] Added dynamic post-type mapping UI with ACF field discovery and admin script for dropdown-driven configuration.
