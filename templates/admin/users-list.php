@@ -57,75 +57,89 @@ $addUrl = add_query_arg(
   <?php if (empty($users)) : ?>
     <p><?php esc_html_e('No users found yet. Add one to manage subscriptions and usage limits.', 'agentos'); ?></p>
   <?php else : ?>
-    <table class="widefat fixed striped">
-      <thead>
-        <tr>
-          <th scope="col"><?php esc_html_e('User', 'agentos'); ?></th>
-          <th scope="col"><?php esc_html_e('Email', 'agentos'); ?></th>
-          <th scope="col"><?php esc_html_e('Sessions', 'agentos'); ?></th>
-          <th scope="col"><?php esc_html_e('Usage (tokens)', 'agentos'); ?></th>
-          <th scope="col"><?php esc_html_e('Last activity', 'agentos'); ?></th>
-          <th scope="col"><?php esc_html_e('Subscriptions', 'agentos'); ?></th>
-        </tr>
-      </thead>
-      <tbody>
-        <?php foreach ($users as $user) :
-            $userKey = $user['user_key'];
-            $meta = $user['meta'] ?? ['name' => '', 'email' => '', 'notes' => '', 'wp_user_id' => 0];
-            $displayName = $meta['name'] ?: ($meta['email'] ?: $userKey);
-            $email = $meta['email'] ?: $user['user_email'];
-            $viewUrl = add_query_arg(['page' => 'agentos-users', 'action' => 'view', 'user' => $userKey], admin_url('admin.php'));
-            $editUrl = add_query_arg(['page' => 'agentos-users', 'action' => 'edit', 'user' => $userKey], admin_url('admin.php'));
-            $subscriptionsForUser = $assignments[$userKey] ?? [];
-            $subscriptionLabels = [];
-            foreach ($subscriptionsForUser as $assignment) {
-                $slug = $assignment['subscription_slug'];
-                $subscriptionLabels[] = $planLabels[$slug] ?? $slug;
-            }
-            $deleteFormId = 'delete-user-' . md5($userKey);
-            ?>
+    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+      <?php wp_nonce_field('agentos_delete_user'); ?>
+      <input type="hidden" name="action" value="agentos_delete_user">
+      <div class="tablenav top">
+        <div class="alignleft actions bulkactions">
+          <label for="bulk-action-selector-top" class="screen-reader-text"><?php esc_html_e('Select bulk action', 'agentos'); ?></label>
+          <select name="bulk_action" id="bulk-action-selector-top">
+            <option value="-1"><?php esc_html_e('Bulk actions', 'agentos'); ?></option>
+            <option value="delete"><?php esc_html_e('Delete', 'agentos'); ?></option>
+          </select>
+          <button type="submit" class="button action" onclick="return document.getElementById('bulk-action-selector-top').value === 'delete' && confirm('<?php echo esc_js(__('Delete selected users and their assignments?', 'agentos')); ?>');"><?php esc_html_e('Apply', 'agentos'); ?></button>
+        </div>
+      </div>
+      <table class="wp-list-table widefat fixed striped table-view-list">
+        <thead>
           <tr>
-            <td>
-              <strong><a href="<?php echo esc_url($viewUrl); ?>"><?php echo esc_html($displayName); ?></a></strong>
-              <div class="row-actions">
-                <span class="view"><a href="<?php echo esc_url($viewUrl); ?>"><?php esc_html_e('View', 'agentos'); ?></a></span> |
-                <span class="edit"><a href="<?php echo esc_url($editUrl); ?>"><?php esc_html_e('Edit', 'agentos'); ?></a></span> |
-                <span class="delete">
-                  <form id="<?php echo esc_attr($deleteFormId); ?>" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline;">
-                    <?php wp_nonce_field('agentos_delete_user'); ?>
-                    <input type="hidden" name="action" value="agentos_delete_user">
-                    <input type="hidden" name="user_key" value="<?php echo esc_attr($userKey); ?>">
-                    <button type="submit" class="button-link-delete" onclick="return confirm('<?php echo esc_js(__('Delete this user and their assignments?', 'agentos')); ?>');"><?php esc_html_e('Delete', 'agentos'); ?></button>
-                  </form>
-                </span>
-              </div>
-            </td>
-            <td><?php echo $email ? esc_html($email) : __('—', 'agentos'); ?></td>
-            <td><?php echo esc_html(number_format_i18n((int) $user['sessions'])); ?></td>
-            <td>
-              <div><?php printf(esc_html__('Realtime: %s', 'agentos'), number_format_i18n((int) $user['tokens_realtime'])); ?></div>
-              <div><?php printf(esc_html__('Text: %s', 'agentos'), number_format_i18n((int) $user['tokens_text'])); ?></div>
-              <div><strong><?php printf(esc_html__('Total: %s', 'agentos'), number_format_i18n((int) $user['tokens_total'])); ?></strong></div>
-            </td>
-            <td>
-              <?php
-              if (!empty($user['last_activity'])) {
-                  echo esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $user['last_activity']));
-              } else {
-                  esc_html_e('—', 'agentos');
+            <td class="manage-column column-cb check-column"><input type="checkbox" aria-label="<?php esc_attr_e('Select all users', 'agentos'); ?>"></td>
+            <th scope="col"><?php esc_html_e('User', 'agentos'); ?></th>
+            <th scope="col"><?php esc_html_e('Email', 'agentos'); ?></th>
+            <th scope="col"><?php esc_html_e('Sessions', 'agentos'); ?></th>
+            <th scope="col"><?php esc_html_e('Usage (tokens)', 'agentos'); ?></th>
+            <th scope="col"><?php esc_html_e('Last activity', 'agentos'); ?></th>
+            <th scope="col"><?php esc_html_e('Subscriptions', 'agentos'); ?></th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php foreach ($users as $user) :
+              $userKey = $user['user_key'];
+              $meta = $user['meta'] ?? ['name' => '', 'email' => '', 'notes' => '', 'wp_user_id' => 0];
+              $displayName = $meta['name'] ?: ($meta['email'] ?: $userKey);
+              $email = $meta['email'] ?: $user['user_email'];
+              $viewUrl = add_query_arg(['page' => 'agentos-users', 'action' => 'view', 'user' => $userKey], admin_url('admin.php'));
+              $editUrl = add_query_arg(['page' => 'agentos-users', 'action' => 'edit', 'user' => $userKey], admin_url('admin.php'));
+              $deleteUrl = wp_nonce_url(add_query_arg([
+                  'action' => 'agentos_delete_user',
+                  'user' => $userKey,
+              ], admin_url('admin-post.php')), 'agentos_delete_user');
+              $subscriptionsForUser = $assignments[$userKey] ?? [];
+              $subscriptionLabels = [];
+              foreach ($subscriptionsForUser as $assignment) {
+                  $slug = $assignment['subscription_slug'];
+                  $subscriptionLabels[] = $planLabels[$slug] ?? $slug;
               }
               ?>
-            </td>
-            <td>
-              <?php if ($subscriptionLabels) : ?>
-                <?php echo esc_html(implode(', ', $subscriptionLabels)); ?>
-              <?php else : ?>
-                <em><?php esc_html_e('None', 'agentos'); ?></em>
-              <?php endif; ?>
-            </td>
-          </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
+            <tr>
+              <th scope="row" class="check-column">
+                <input type="checkbox" name="users[]" value="<?php echo esc_attr($userKey); ?>">
+              </th>
+              <td class="column-primary">
+                <strong><a href="<?php echo esc_url($viewUrl); ?>"><?php echo esc_html($displayName); ?></a></strong>
+                <div class="row-actions">
+                  <span class="view"><a href="<?php echo esc_url($viewUrl); ?>"><?php esc_html_e('View', 'agentos'); ?></a></span> |
+                  <span class="edit"><a href="<?php echo esc_url($editUrl); ?>"><?php esc_html_e('Edit', 'agentos'); ?></a></span> |
+                  <span class="delete"><a href="<?php echo esc_url($deleteUrl); ?>" class="submitdelete" onclick="return confirm('<?php echo esc_js(__('Delete this user and their assignments?', 'agentos')); ?>');"><?php esc_html_e('Delete', 'agentos'); ?></a></span>
+                </div>
+              </td>
+              <td><?php echo $email ? esc_html($email) : __('—', 'agentos'); ?></td>
+              <td><?php echo esc_html(number_format_i18n((int) $user['sessions'])); ?></td>
+              <td>
+                <div><?php printf(esc_html__('Realtime: %s', 'agentos'), number_format_i18n((int) $user['tokens_realtime'])); ?></div>
+                <div><?php printf(esc_html__('Text: %s', 'agentos'), number_format_i18n((int) $user['tokens_text'])); ?></div>
+                <div><strong><?php printf(esc_html__('Total: %s', 'agentos'), number_format_i18n((int) $user['tokens_total'])); ?></strong></div>
+              </td>
+              <td>
+                <?php
+                if (!empty($user['last_activity'])) {
+                    echo esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $user['last_activity']));
+                } else {
+                    esc_html_e('—', 'agentos');
+                }
+                ?>
+              </td>
+              <td>
+                <?php if ($subscriptionLabels) : ?>
+                  <?php echo esc_html(implode(', ', $subscriptionLabels)); ?>
+                <?php else : ?>
+                  <em><?php esc_html_e('None', 'agentos'); ?></em>
+                <?php endif; ?>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </form>
   <?php endif; ?>
 </div>

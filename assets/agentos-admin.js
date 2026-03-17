@@ -1,4 +1,6 @@
 (function () {
+  initBulkTables();
+
   const data = window.AgentOSAdminData || null;
   if (!data) {
     return;
@@ -260,5 +262,20 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  function initBulkTables() {
+    document.querySelectorAll('.wp-list-table .check-column input[type="checkbox"][aria-label]').forEach(toggle => {
+      toggle.addEventListener('change', function () {
+        const table = this.closest('table');
+        if (!table) {
+          return;
+        }
+
+        table.querySelectorAll('tbody .check-column input[type="checkbox"]').forEach(input => {
+          input.checked = this.checked;
+        });
+      });
+    });
   }
 })();

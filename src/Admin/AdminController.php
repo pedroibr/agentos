@@ -147,6 +147,8 @@ class AdminController
             Config::VERSION,
             true
         );
+
+        wp_enqueue_script('agentos-admin');
     }
 
     public function handleSave(): void
@@ -179,14 +181,32 @@ class AdminController
 
         check_admin_referer('agentos_delete_agent');
 
-        $slug = isset($_GET['agent']) ? sanitize_key($_GET['agent']) : '';
-        if ($slug) {
+        $slugs = [];
+        if (isset($_GET['agent'])) {
+            $slug = sanitize_key($_GET['agent']);
+            if ($slug) {
+                $slugs[] = $slug;
+            }
+        }
+
+        if (isset($_POST['agents']) && is_array($_POST['agents'])) {
+            foreach (wp_unslash($_POST['agents']) as $slug) {
+                $slug = sanitize_key($slug);
+                if ($slug) {
+                    $slugs[] = $slug;
+                }
+            }
+        }
+
+        $deleted = false;
+        foreach (array_unique($slugs) as $slug) {
             $this->agents->delete($slug);
+            $deleted = true;
         }
 
         wp_safe_redirect(
             add_query_arg(
-                ['page' => 'agentos', 'message' => 'deleted'],
+                ['page' => 'agentos', 'message' => $deleted ? 'deleted' : ''],
                 admin_url('admin.php')
             )
         );
@@ -446,14 +466,32 @@ class AdminController
 
         check_admin_referer('agentos_delete_subscription');
 
-        $slug = isset($_GET['subscription']) ? sanitize_key($_GET['subscription']) : '';
-        if ($slug) {
+        $slugs = [];
+        if (isset($_GET['subscription'])) {
+            $slug = sanitize_key($_GET['subscription']);
+            if ($slug) {
+                $slugs[] = $slug;
+            }
+        }
+
+        if (isset($_POST['subscriptions']) && is_array($_POST['subscriptions'])) {
+            foreach (wp_unslash($_POST['subscriptions']) as $slug) {
+                $slug = sanitize_key($slug);
+                if ($slug) {
+                    $slugs[] = $slug;
+                }
+            }
+        }
+
+        $deleted = false;
+        foreach (array_unique($slugs) as $slug) {
             $this->subscriptions->delete($slug);
+            $deleted = true;
         }
 
         wp_safe_redirect(
             add_query_arg(
-                ['page' => 'agentos-subscriptions', 'message' => 'deleted'],
+                ['page' => 'agentos-subscriptions', 'message' => $deleted ? 'deleted' : ''],
                 admin_url('admin.php')
             )
         );
@@ -919,16 +957,86 @@ class AdminController
 
         check_admin_referer('agentos_delete_user');
 
-        $userKey = isset($_POST['user_key']) ? sanitize_text_field(wp_unslash($_POST['user_key'])) : '';
-        if ($userKey) {
+        $userKeys = [];
+        if (isset($_GET['user'])) {
+            $userKey = sanitize_text_field($_GET['user']);
+            if ($userKey) {
+                $userKeys[] = $userKey;
+            }
+        }
+        if (isset($_GET['user_key'])) {
+            $userKey = sanitize_text_field($_GET['user_key']);
+            if ($userKey) {
+                $userKeys[] = $userKey;
+            }
+        }
+        if (isset($_POST['user_key'])) {
+            $userKey = sanitize_text_field(wp_unslash($_POST['user_key']));
+            if ($userKey) {
+                $userKeys[] = $userKey;
+            }
+        }
+
+        if (isset($_POST['users']) && is_array($_POST['users'])) {
+            foreach (wp_unslash($_POST['users']) as $userKey) {
+                $userKey = sanitize_text_field($userKey);
+                if ($userKey) {
+                    $userKeys[] = $userKey;
+                }
+            }
+        }
+
+        $deleted = false;
+        foreach (array_unique($userKeys) as $userKey) {
             $this->userSubscriptions->deleteUser($userKey);
             $this->usage->deleteForUser($userKey);
             $this->transcripts->deleteForUser($userKey);
+            $deleted = true;
         }
 
         wp_safe_redirect(
             add_query_arg(
-                ['page' => 'agentos-users', 'message' => 'user_deleted'],
+                ['page' => 'agentos-users', 'message' => $deleted ? 'user_deleted' : ''],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function handleTranscriptDelete(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_delete_transcript');
+
+        $ids = [];
+        if (isset($_GET['transcript'])) {
+            $id = (int) $_GET['transcript'];
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        if (isset($_POST['transcripts']) && is_array($_POST['transcripts'])) {
+            foreach (wp_unslash($_POST['transcripts']) as $id) {
+                $id = (int) $id;
+                if ($id > 0) {
+                    $ids[] = $id;
+                }
+            }
+        }
+
+        $deleted = false;
+        foreach (array_unique($ids) as $id) {
+            $this->transcripts->deleteById($id);
+            $deleted = true;
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                ['page' => 'agentos-sessions', 'message' => $deleted ? 'deleted' : ''],
                 admin_url('admin.php')
             )
         );

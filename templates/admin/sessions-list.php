@@ -33,6 +33,8 @@ $statuses = [
 
   <?php if ($message === 'missing') : ?>
     <div class="notice notice-error"><p><?php esc_html_e('Transcript not found.', 'agentos'); ?></p></div>
+  <?php elseif ($message === 'deleted') : ?>
+    <div class="notice notice-success is-dismissible"><p><?php esc_html_e('Session deleted.', 'agentos'); ?></p></div>
   <?php elseif ($message === 'analysis_queued') : ?>
     <div class="notice notice-success is-dismissible"><p><?php esc_html_e('Analysis queued. Refresh this page in a few moments for results.', 'agentos'); ?></p></div>
   <?php elseif ($message === 'analysis_failed') : ?>
@@ -81,56 +83,82 @@ $statuses = [
   <?php if (empty($transcripts)) : ?>
     <p><?php esc_html_e('No transcripts found for the selected filters.', 'agentos'); ?></p>
   <?php else : ?>
-    <table class="widefat striped">
-      <thead>
-        <tr>
-          <th><?php esc_html_e('ID', 'agentos'); ?></th>
-          <th><?php esc_html_e('Post', 'agentos'); ?></th>
-          <th><?php esc_html_e('Agent', 'agentos'); ?></th>
-          <th><?php esc_html_e('User Email', 'agentos'); ?></th>
-          <th><?php esc_html_e('Created', 'agentos'); ?></th>
-          <th><?php esc_html_e('Status', 'agentos'); ?></th>
-          <th><?php esc_html_e('Last Run', 'agentos'); ?></th>
-          <th><?php esc_html_e('Actions', 'agentos'); ?></th>
-        </tr>
-      </thead>
-      <tbody>
-        <?php foreach ($transcripts as $row) :
-            $post = get_post($row['post_id']);
-            $postTitle = $post ? get_the_title($post) : sprintf(__('Post #%d', 'agentos'), (int) $row['post_id']);
-            $agentLabel = $agentOptions[$row['agent_id']] ?? $row['agent_id'];
-            $status = $row['analysis_status'] ?: 'idle';
-            $created = $row['created_at'] ? esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $row['created_at'])) : '';
-            $completedAt = $row['analysis_completed_at'] ? esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $row['analysis_completed_at'])) : __('—', 'agentos');
-            $editLink = get_edit_post_link($row['post_id']);
-            $viewUrl = add_query_arg([
-                'page' => 'agentos-sessions',
-                'action' => 'view',
-                'transcript' => $row['id'],
-            ], admin_url('admin.php'));
-            ?>
+    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+      <?php wp_nonce_field('agentos_delete_transcript'); ?>
+      <input type="hidden" name="action" value="agentos_delete_transcript">
+      <div class="tablenav top">
+        <div class="alignleft actions bulkactions">
+          <label for="bulk-action-selector-top" class="screen-reader-text"><?php esc_html_e('Select bulk action', 'agentos'); ?></label>
+          <select name="bulk_action" id="bulk-action-selector-top">
+            <option value="-1"><?php esc_html_e('Bulk actions', 'agentos'); ?></option>
+            <option value="delete"><?php esc_html_e('Delete', 'agentos'); ?></option>
+          </select>
+          <button type="submit" class="button action" onclick="return document.getElementById('bulk-action-selector-top').value === 'delete' && confirm('<?php echo esc_js(__('Delete selected sessions?', 'agentos')); ?>');"><?php esc_html_e('Apply', 'agentos'); ?></button>
+        </div>
+      </div>
+      <table class="wp-list-table widefat fixed striped table-view-list">
+        <thead>
           <tr>
-            <td><?php echo esc_html((int) $row['id']); ?></td>
-            <td>
-              <?php if ($editLink) : ?>
-                <a href="<?php echo esc_url($editLink); ?>"><?php echo esc_html($postTitle); ?></a>
-              <?php else : ?>
-                <?php echo esc_html($postTitle); ?>
-              <?php endif; ?>
-            </td>
-            <td><?php echo esc_html($agentLabel); ?></td>
-            <td><?php echo esc_html($row['user_email']); ?></td>
-            <td><?php echo $created; ?></td>
-            <td>
-              <span class="agentos-status agentos-status--<?php echo esc_attr($status); ?>">
-                <?php echo esc_html(ucfirst($status)); ?>
-              </span>
-            </td>
-            <td><?php echo $completedAt; ?></td>
-            <td><a href="<?php echo esc_url($viewUrl); ?>"><?php esc_html_e('View', 'agentos'); ?></a></td>
+            <td class="manage-column column-cb check-column"><input type="checkbox" aria-label="<?php esc_attr_e('Select all sessions', 'agentos'); ?>"></td>
+            <th><?php esc_html_e('Session', 'agentos'); ?></th>
+            <th><?php esc_html_e('Post', 'agentos'); ?></th>
+            <th><?php esc_html_e('Agent', 'agentos'); ?></th>
+            <th><?php esc_html_e('User Email', 'agentos'); ?></th>
+            <th><?php esc_html_e('Created', 'agentos'); ?></th>
+            <th><?php esc_html_e('Status', 'agentos'); ?></th>
+            <th><?php esc_html_e('Last Run', 'agentos'); ?></th>
           </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          <?php foreach ($transcripts as $row) :
+              $post = get_post($row['post_id']);
+              $postTitle = $post ? get_the_title($post) : sprintf(__('Post #%d', 'agentos'), (int) $row['post_id']);
+              $agentLabel = $agentOptions[$row['agent_id']] ?? $row['agent_id'];
+              $status = $row['analysis_status'] ?: 'idle';
+              $created = $row['created_at'] ? esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $row['created_at'])) : '';
+              $completedAt = $row['analysis_completed_at'] ? esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $row['analysis_completed_at'])) : __('—', 'agentos');
+              $editLink = get_edit_post_link($row['post_id']);
+              $viewUrl = add_query_arg([
+                  'page' => 'agentos-sessions',
+                  'action' => 'view',
+                  'transcript' => $row['id'],
+              ], admin_url('admin.php'));
+              $deleteUrl = wp_nonce_url(add_query_arg([
+                  'action' => 'agentos_delete_transcript',
+                  'transcript' => $row['id'],
+              ], admin_url('admin-post.php')), 'agentos_delete_transcript');
+              ?>
+            <tr>
+              <th scope="row" class="check-column">
+                <input type="checkbox" name="transcripts[]" value="<?php echo esc_attr((int) $row['id']); ?>">
+              </th>
+              <td class="column-primary">
+                <strong><a href="<?php echo esc_url($viewUrl); ?>">#<?php echo esc_html((int) $row['id']); ?></a></strong>
+                <div class="row-actions">
+                  <span class="view"><a href="<?php echo esc_url($viewUrl); ?>"><?php esc_html_e('View', 'agentos'); ?></a></span> |
+                  <span class="delete"><a href="<?php echo esc_url($deleteUrl); ?>" class="submitdelete" onclick="return confirm('<?php echo esc_js(__('Delete this session?', 'agentos')); ?>');"><?php esc_html_e('Delete', 'agentos'); ?></a></span>
+                </div>
+              </td>
+              <td>
+                <?php if ($editLink) : ?>
+                  <a href="<?php echo esc_url($editLink); ?>"><?php echo esc_html($postTitle); ?></a>
+                <?php else : ?>
+                  <?php echo esc_html($postTitle); ?>
+                <?php endif; ?>
+              </td>
+              <td><?php echo esc_html($agentLabel); ?></td>
+              <td><?php echo esc_html($row['user_email']); ?></td>
+              <td><?php echo $created; ?></td>
+              <td>
+                <span class="agentos-status agentos-status--<?php echo esc_attr($status); ?>">
+                  <?php echo esc_html(ucfirst($status)); ?>
+                </span>
+              </td>
+              <td><?php echo $completedAt; ?></td>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </form>
   <?php endif; ?>
 </div>
