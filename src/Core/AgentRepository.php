@@ -10,7 +10,9 @@ class AgentRepository
             'label' => '',
             'slug' => '',
             'default_mode' => 'voice',
-            'default_model' => Config::FALLBACK_MODEL,
+            'default_model' => Config::FALLBACK_REALTIME_MODEL,
+            'realtime_model' => Config::FALLBACK_REALTIME_MODEL,
+            'text_model' => Config::FALLBACK_TEXT_MODEL,
             'default_voice' => Config::FALLBACK_VOICE,
             'base_prompt' => '',
             'context_params' => [],
@@ -107,9 +109,16 @@ class AgentRepository
         $agent['label'] = sanitize_text_field($input['label'] ?? '');
         $agent['slug'] = $slug;
 
-        $agent['default_model'] = sanitize_text_field($input['default_model'] ?? Config::FALLBACK_MODEL);
-        if (!$agent['default_model']) {
-            $agent['default_model'] = Config::FALLBACK_MODEL;
+        $realtimeModel = sanitize_text_field($input['realtime_model'] ?? ($input['default_model'] ?? Config::FALLBACK_REALTIME_MODEL));
+        if (!$realtimeModel) {
+            $realtimeModel = Config::FALLBACK_REALTIME_MODEL;
+        }
+        $agent['realtime_model'] = $realtimeModel;
+        $agent['default_model'] = $realtimeModel;
+
+        $agent['text_model'] = sanitize_text_field($input['text_model'] ?? Config::FALLBACK_TEXT_MODEL);
+        if (!$agent['text_model']) {
+            $agent['text_model'] = Config::FALLBACK_TEXT_MODEL;
         }
 
         $agent['default_voice'] = sanitize_text_field($input['default_voice'] ?? Config::FALLBACK_VOICE);
@@ -174,7 +183,7 @@ class AgentRepository
         $postType = get_post_type($postId);
         $map = $agent['field_maps'][$postType] ?? [];
 
-        $model = $this->getFieldValue($postId, $map['model'] ?? '') ?: ($agent['default_model'] ?: Config::FALLBACK_MODEL);
+        $model = $this->getFieldValue($postId, $map['model'] ?? '') ?: (($agent['realtime_model'] ?? $agent['default_model'] ?? '') ?: Config::FALLBACK_REALTIME_MODEL);
         $voice = $this->getFieldValue($postId, $map['voice'] ?? '') ?: ($agent['default_voice'] ?: Config::FALLBACK_VOICE);
 
         $instructions = $this->getFieldValue($postId, $map['system_prompt'] ?? '');
@@ -186,6 +195,8 @@ class AgentRepository
 
         return [
             'model' => sanitize_text_field($model),
+            'realtime_model' => sanitize_text_field($model),
+            'text_model' => sanitize_text_field($agent['text_model'] ?? Config::FALLBACK_TEXT_MODEL),
             'voice' => sanitize_text_field($voice),
             'instructions' => sanitize_textarea_field($instructions),
             'user_prompt' => sanitize_textarea_field($userPrompt),
