@@ -17,6 +17,7 @@
 ## Admin UX
 
 - **AgentOS → Settings**: choose the API key source (ENV, PHP constant, or manual), configure allowed context query parameters, and enable optional debug logging.
+- **AgentOS → Settings** also controls the external Integration API: enable/disable provisioning access and generate a Bearer API key for automation tools.
 - **AgentOS → Agents**: create any number of agents, set their default model/voice/mode, choose which post types they run on, map ACF/meta fields for model, voice, system prompt, and user prompt, toggle the live transcript block, and now opt into post-session analysis by supplying a default model + system prompt (with an auto-run option).
 - **AgentOS → Sessions** *(new in v0.6.0)*: browse saved transcripts, filter by agent/post/status/email, inspect individual sessions (transcript + analysis feedback), and queue/re-run AI analysis with optional per-run prompt/model overrides.
 - **AgentOS → Subscriptions** *(new in v0.7.x)*: define reusable usage plans with per-period token/session caps, agent allow-lists, optional per-session hard stops, and toggle whether overages block or merely warn.
@@ -49,8 +50,25 @@ Context params (from Settings) continue to pass URL values through to the genera
 - POST `/wp-json/agentos/v1/usage/session` (frontend + admin) records session usage metrics even when transcripts are not saved. Payload includes `session_id`, token counts, duration, optional `subscription_slug`, and `_wpnonce`.
 - GET `/wp-json/agentos/v1/subscriptions/user?user_key=...` (admin only) retrieves current subscription assignments plus usage totals for the relevant windows.
 - POST `/wp-json/agentos/v1/subscriptions/user` (admin only) assigns subscriptions to a user key. Payload accepts `user_key`, optional `meta` (`label`, `email`, `notes`), an array of `{slug, expires_at, overrides}` structures, and optional `replace=true` to overwrite existing assignments.
+- GET `/wp-json/agentos/v1/provision/user?user_key=...` or `?email=...` (Integration API) retrieves the AgentOS user profile, assigned subscriptions, and aggregate usage totals.
+- POST `/wp-json/agentos/v1/provision/user` (Integration API) creates/syncs an AgentOS user record for an existing WordPress account. Payload accepts `user_key` or `email`, plus optional `meta` (`name`, `email`, `notes`).
+- DELETE `/wp-json/agentos/v1/provision/user` (Integration API) removes the AgentOS user record, subscription assignments, usage log entries, and saved transcripts for the target `user_key`/`email`.
+- POST `/wp-json/agentos/v1/provision/user/subscriptions` (Integration API) assigns subscriptions to a provisioned user. Payload accepts `user_key` or `email`, optional `meta`, an array of `{slug, expires_at, overrides}`, and optional `replace=true`.
+- DELETE `/wp-json/agentos/v1/provision/user/subscriptions` (Integration API) removes one or more subscriptions from a provisioned user using `subscription_slug` or `subscription_slugs`.
 
 Admin-only endpoints to fetch a single transcript or trigger analysis live inside the WordPress dashboard and reuse the same repository layer.
+
+### Integration API Auth
+
+- Enable the Integration API and generate a key under **AgentOS → Settings**.
+- Send the key in the request header:
+
+```http
+Authorization: Bearer agtos_...
+Content-Type: application/json
+```
+
+- Integration API endpoints are intended for server-to-server automation. They do not use `X-WP-Nonce`.
 
 ## Development Workflow
 

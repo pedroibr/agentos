@@ -195,6 +195,53 @@ class UsageRepository
         ];
     }
 
+    public function summarizeUserTotals(string $userKey): array
+    {
+        $userKey = trim($userKey);
+        if ($userKey === '') {
+            return [
+                'tokens_realtime' => 0,
+                'tokens_text' => 0,
+                'tokens_total' => 0,
+                'sessions' => 0,
+                'last_activity' => '',
+            ];
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'agentos_usage';
+        $sql = $wpdb->prepare(
+            "SELECT
+                COALESCE(SUM(tokens_realtime), 0) AS tokens_realtime,
+                COALESCE(SUM(tokens_text), 0) AS tokens_text,
+                COALESCE(SUM(tokens_total), 0) AS tokens_total,
+                COUNT(DISTINCT session_id) AS sessions,
+                MAX(updated_at) AS last_activity
+            FROM $table
+            WHERE user_key = %s",
+            $userKey
+        );
+
+        $row = $wpdb->get_row($sql, ARRAY_A);
+        if (!$row) {
+            return [
+                'tokens_realtime' => 0,
+                'tokens_text' => 0,
+                'tokens_total' => 0,
+                'sessions' => 0,
+                'last_activity' => '',
+            ];
+        }
+
+        return [
+            'tokens_realtime' => (int) $row['tokens_realtime'],
+            'tokens_text' => (int) $row['tokens_text'],
+            'tokens_total' => (int) $row['tokens_total'],
+            'sessions' => (int) $row['sessions'],
+            'last_activity' => (string) ($row['last_activity'] ?? ''),
+        ];
+    }
+
     public function listUsers(int $limit = 100, array $filters = []): array
     {
         global $wpdb;

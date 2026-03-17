@@ -222,6 +222,18 @@ class TranscriptRepository
         );
     }
 
+    public function deleteForUser(string $userKey): void
+    {
+        $userKey = trim($userKey);
+        if ($userKey === '') {
+            return;
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'agentos_transcripts';
+        $wpdb->delete($table, ['user_key' => $userKey], ['%s']);
+    }
+
     public function summarizeUsage(string $subscriptionSlug, string $userKey, int $periodHours): array
     {
         if ($subscriptionSlug === '' || $userKey === '') {
