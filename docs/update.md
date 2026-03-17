@@ -14,4 +14,8 @@
 [2025-10-22 10:40][v0.8.2] Added a managed user directory with modal editor, manual create/delete flows, metadata storage, API support for `meta` payloads, and UI polish for assignment/search filters.
 [2025-10-22 11:20][v0.8.5] Introduced dedicated usage logging (new DB table + REST endpoint), capture session metrics on stop/save, updated limiter/admin reports to consume the usage log, standardized the admin UI (new Users list/detail/add screens), and enhanced the embed to stream approximate token counts per session.
 [2025-10-28 14:10][v0.8.6] Required existing WordPress accounts for AgentOS users, auto-linked by email/ID, blocked manual user creation without a WP match, removed anonymous user keys, and surfaced clearer admin notices; bumped plugin version to 0.8.6.
+[2026-01-19][v8.7] Improved frontend logging for transcript bubbles and realtime events; bumped plugin version to 8.7.
+[2026-01-19][v8.8] Added realtime input transcription fallback for user bubbles; bumped plugin version to 8.8.
+[2026-01-19][v9.0] Stabilized realtime user transcription ordering and echo handling; bumped plugin version to 9.0.
 [2025-10-21 12:30][v0.7.0] Hardened realtime token permissions with post visibility checks, localized transcript history timestamps in the embed, introduced the AgentOS Gutenberg block (sharing the shortcode renderer), and refreshed docs for the new editor workflow.
+[2026-03-17][v10.0] Refined the AgentOS embed UI across desktop and mobile: full-width container behavior with centered content bounds, smarter height handling, sidebar toggle states, smoother transcript auto-scroll, current-session feedback folded into the conversation panel, improved saved-transcript behavior, and asset cache busting via file modification versions.

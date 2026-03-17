@@ -284,6 +284,9 @@ class RestController
             'voice' => $config['voice'],
             'modalities' => ['audio', 'text'],
             'instructions' => $instructions,
+            'input_audio_transcription' => [
+                'model' => 'whisper-1',
+            ],
         ];
 
         $response = wp_remote_post(
