@@ -128,16 +128,16 @@
               <div class="agentos-toolbar__group">
                 <button class="agentos-btn agentos-btn--primary agentos-start">
                   <span class="agentos-btn__icon" aria-hidden="true"></span>
-                  <span><?php esc_html_e('Start voice', 'agentos'); ?></span>
+                  <span class="agentos-btn__label"><?php esc_html_e('Start voice', 'agentos'); ?></span>
                 </button>
                 <button class="agentos-btn agentos-btn--ghost agentos-stop" disabled>
                   <span class="agentos-btn__icon agentos-btn__icon--stop" aria-hidden="true"></span>
-                  <span><?php esc_html_e('Stop', 'agentos'); ?></span>
+                  <span class="agentos-btn__label"><?php esc_html_e('Stop', 'agentos'); ?></span>
                 </button>
                 <?php if ($transcriptEnabled) : ?>
                   <button class="agentos-btn agentos-btn--ghost agentos-save" disabled>
                     <span class="agentos-btn__icon agentos-btn__icon--save" aria-hidden="true"></span>
-                    <span><?php esc_html_e('Save', 'agentos'); ?></span>
+                    <span class="agentos-btn__label"><?php esc_html_e('Save', 'agentos'); ?></span>
                   </button>
                 <?php endif; ?>
               </div>

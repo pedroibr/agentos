@@ -149,6 +149,17 @@
     let sidebarOpen = compactLayoutQuery ? !compactLayoutQuery.matches : true;
     let lastCompactLayout = compactLayoutQuery ? compactLayoutQuery.matches : false;
     let layoutRaf = 0;
+    const startButtonDefaultLabel = els.start ? (els.start.textContent || '').trim() : '';
+
+    function setStartButtonLabel(nextLabel) {
+      if (!els.start) return;
+      const label = els.start.querySelector('.agentos-btn__label');
+      if (label) {
+        label.textContent = nextLabel;
+      } else {
+        els.start.textContent = nextLabel;
+      }
+    }
 
     function isCompactLayout() {
       return compactLayoutQuery ? compactLayoutQuery.matches : window.innerWidth <= 1100;
@@ -177,7 +188,7 @@
       const wrapRect = wrap.getBoundingClientRect();
       const parent = wrap.parentElement;
       const minHeight = getShellMinHeight();
-      const bottomGap = isCompactLayout() ? 12 : 24;
+      const bottomGap = 0;
       const viewportAvailable = Math.max(0, Math.floor(viewportHeight - Math.max(wrapRect.top, 0) - bottomGap));
       let targetHeight = Math.max(minHeight, viewportAvailable);
 
@@ -614,6 +625,41 @@
       micStream = null;
     }
 
+    function sendRealtimeHistoryMessage(role, text) {
+      if (!dc || dc.readyState !== 'open') return;
+      const normalizedRole = role === 'assistant' ? 'assistant' : 'user';
+      const normalizedText = String(text || '').trim();
+      if (!normalizedText) return;
+      dc.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: normalizedRole,
+          content: [
+            normalizedRole === 'assistant'
+              ? { type: 'output_text', text: normalizedText }
+              : { type: 'input_text', text: normalizedText }
+          ]
+        }
+      }));
+    }
+
+    function restoreRealtimeConversation(userPrompt) {
+      if (!dc || dc.readyState !== 'open') return;
+      const transcriptHasHistory = Array.isArray(transcript) && transcript.length > 0;
+      if (transcriptHasHistory && userPrompt) {
+        sendRealtimeHistoryMessage('user', 'User Prompt:\n' + userPrompt);
+      }
+      transcript.forEach((entry) => {
+        if (!entry || !entry.role || !entry.text) return;
+        sendRealtimeHistoryMessage(entry.role, entry.text);
+      });
+      if (!transcriptHasHistory && userPrompt) {
+        sendRealtimeHistoryMessage('user', 'User Prompt:\n' + userPrompt);
+        dc.send(JSON.stringify({ type:'response.create' }));
+      }
+    }
+
     function resetCurrentSession(options = {}) {
       teardownRealtimeSession();
       cleanupInputRecorder(true);
@@ -638,6 +684,7 @@
       }
       if (els.textSend) els.textSend.disabled = false;
       if (els.start) els.start.disabled = false;
+      setStartButtonLabel(startButtonDefaultLabel || 'Start voice');
       if (els.stop) els.stop.disabled = true;
       if (els.save) els.save.disabled = true;
       setStatus(options.status || 'Ready');
@@ -1192,14 +1239,19 @@
 
     // main connect
     els.start.addEventListener('click', async () => {
+      const isResumeAttempt = !!SESSION_ID;
       try {
         logInfo('Start clicked', { agentId, postId, mode });
         els.start.disabled = true; if (els.save) els.save.disabled = true;
         activeModel = ''; activeVoice = '';
         window._agentosModel = ''; window._agentosVoice = '';
-        SESSION_ID = uuidv4();
-        resetSessionStats();
-        sessionStats.startTime = Date.now();
+        if (!SESSION_ID) {
+          SESSION_ID = uuidv4();
+          resetSessionStats();
+          sessionStats.startTime = Date.now();
+        } else if (!sessionStats.startTime) {
+          sessionStats.startTime = Date.now();
+        }
         sessionActive = false;
 
         // Microphone only if voice|both
@@ -1253,20 +1305,10 @@
 
         setStatus('Connected');
 
-        // Inject optional user-supplied context
-        const contextBlocks = [];
-        if (user_prompt) {
-          contextBlocks.push(`User Prompt:\n${user_prompt}`);
-        }
-        if (contextBlocks.length) {
-          dc.send(JSON.stringify({
-            type:'conversation.item.create',
-            item:{ type:'message', role:'user', content:[{type:'input_text', text: contextBlocks.join('\n\n')}] }
-          }));
-          dc.send(JSON.stringify({ type:'response.create' }));
-        }
+        restoreRealtimeConversation(user_prompt);
 
         els.stop.disabled = false; if (els.save) els.save.disabled = true;
+        setStartButtonLabel(startButtonDefaultLabel || 'Start voice');
         // Enable save after some content arrives
         if (els.save) {
           setTimeout(()=>{ els.save.disabled = false; }, 1500);
@@ -1274,7 +1316,7 @@
         logInfo('Session ready', { model: activeModel, voice: activeVoice });
         sessionActive = true;
         activateCurrentSessionView();
-        sendUsageUpdate('running', 'started');
+        sendUsageUpdate('running', isResumeAttempt ? 'resumed' : 'started');
 
       } catch (e) {
         logError('Start failed', e);
@@ -1282,27 +1324,30 @@
         els.start.disabled = false;
         stopUserSTT();
         sendUsageUpdate('pending', 'error');
-        SESSION_ID = null;
-        resetSessionStats();
+        if (!isResumeAttempt) {
+          SESSION_ID = null;
+          resetSessionStats();
+        }
         activateCurrentSessionView();
       }
     });
 
     els.stop.addEventListener('click', () => {
       try {
+        if (userBuffer) commitUserFromRealtime();
+        if (assistantBuffer) commitAssistant();
         if (pc) pc.close();
         if (micStream) micStream.getTracks().forEach(t => t.stop());
       } finally {
         teardownRealtimeSession();
         els.stop.disabled = true;
         els.start.disabled = false;
+        setStartButtonLabel('Resume voice');
         if (els.save) els.save.disabled = transcript.length === 0;
-        setStatus('Disconnected');
-        if (typeof commitAssistant === 'function') commitAssistant();
+        setStatus('Paused');
         sessionActive = false;
         activateCurrentSessionView();
-        sendUsageUpdate('final', 'ended', true);
-        activeContext = {};
+        sendUsageUpdate('paused', 'stopped');
       }
     });
 
