@@ -129,6 +129,7 @@
     let activeSubscription = '';
     let activeSessionCap = sessionTokenCapDefault;
     let activeContext = {};
+    let textRequestInFlight = false;
     let sessionActive = false;
     const transcript = []; // [{role,text}]
     const historyState = {
@@ -439,6 +440,52 @@
       renderTranscriptEntries(transcript, { scrollMode: 'bottom' });
       renderSessionList();
       closeSidebarIfCompact();
+    }
+
+    function teardownRealtimeSession() {
+      try {
+        if (pc) pc.close();
+      } catch (_) {}
+      try {
+        if (micStream) micStream.getTracks().forEach((track) => track.stop());
+      } catch (_) {}
+      stopUserSTT();
+      pc = null;
+      dc = null;
+      micStream = null;
+    }
+
+    function resetCurrentSession(options = {}) {
+      teardownRealtimeSession();
+      transcript.length = 0;
+      assistantBuffer = '';
+      currentAssistantBubble = null;
+      userBuffer = '';
+      currentUserBubble = null;
+      lastAssistantText = '';
+      SESSION_ID = null;
+      activeModel = '';
+      activeVoice = '';
+      activeSubscription = '';
+      activeSessionCap = sessionTokenCapDefault;
+      activeContext = {};
+      textRequestInFlight = false;
+      sessionActive = false;
+      resetSessionStats();
+      if (els.textInput && options.clearInput !== false) {
+        els.textInput.value = '';
+        els.textInput.disabled = false;
+      }
+      if (els.textSend) els.textSend.disabled = false;
+      if (els.start) els.start.disabled = false;
+      if (els.stop) els.stop.disabled = true;
+      if (els.save) els.save.disabled = true;
+      setStatus(options.status || 'Ready');
+      if (options.activateView !== false) {
+        activateCurrentSessionView();
+      } else {
+        renderSessionList();
+      }
     }
 
     function activateSavedSession(sessionId) {
@@ -859,16 +906,20 @@
     }
     function stopUserSTT(){ try{ recogActive=false; if (recog) recog.stop(); }catch(_){} }
 
-    // (B) TEXT send path (send text as conversation.item to the realtime DC)
-    function sendTextMessage(txt) {
+    async function sendTextMessage(txt) {
       const msg = (txt||'').trim();
       if (!msg) return;
+      if (mode === 'text') {
+        await sendTextMessageViaResponses(msg);
+        return;
+      }
       recordTokens('text', msg);
       logDebug('Text message sent', { length: msg.length });
       if (canRenderTranscript) {
         addBubble('user', msg);
       }
       transcript.push({ role:'user', text: msg });
+      if (els.save) els.save.disabled = transcript.length === 0;
       if (dc && dc.readyState === 'open') {
         dc.send(JSON.stringify({
           type: 'conversation.item.create',
@@ -880,9 +931,98 @@
       }
     }
 
-    els.textSend?.addEventListener('click', () => {
+    async function sendTextMessageViaResponses(msg) {
+      if (textRequestInFlight) return;
+      if (selectedSessionId) {
+        activateCurrentSessionView();
+      }
+      if (!SESSION_ID) {
+        SESSION_ID = uuidv4();
+        resetSessionStats();
+        sessionStats.startTime = Date.now();
+      } else if (!sessionStats.startTime) {
+        sessionStats.startTime = Date.now();
+      }
+      sessionActive = true;
+      activeVoice = '';
+      setSessionState('running');
+      activateCurrentSessionView();
+      if (canRenderTranscript) {
+        addBubble('user', msg);
+      }
+      transcript.push({ role:'user', text: msg });
+      if (els.save) els.save.disabled = transcript.length === 0;
+      renderSessionList();
+      closeSidebarIfCompact();
+      textRequestInFlight = true;
+      if (els.textSend) els.textSend.disabled = true;
+      if (els.textInput) els.textInput.disabled = true;
+      setStatus('Thinking…');
+
+      try {
+        const res = await fetch(restBase + '/text-response', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json','X-WP-Nonce': nonce},
+          body: JSON.stringify({
+            post_id: postId,
+            agent_id: agentId,
+            session_id: SESSION_ID,
+            anon_id: getAnonId(),
+            ctx: getCtxFromURL(contextParams),
+            message: msg,
+            transcript,
+            tokens_text: sessionStats.tokensText,
+            tokens_total: sessionStats.tokensTotal,
+            duration_seconds: currentDurationSeconds()
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.message || ('Text response failed (' + res.status + ')'));
+        }
+
+        activeModel = data.model || activeModel;
+        activeSubscription = data.subscription || activeSubscription;
+        activeSessionCap = data.session_cap || activeSessionCap;
+        activeContext = data.context && typeof data.context === 'object' ? data.context : activeContext;
+        if (data.session_id) {
+          SESSION_ID = data.session_id;
+        }
+        if (Array.isArray(data.warnings) && data.warnings.length) {
+          logInfo('Subscription warnings', data.warnings);
+        }
+        if (data.usage && typeof data.usage === 'object') {
+          sessionStats.tokensText = Math.max(sessionStats.tokensText, parseInt(data.usage.session_text_tokens || '0', 10) || 0);
+          sessionStats.tokensTotal = Math.max(sessionStats.tokensTotal, parseInt(data.usage.session_total_tokens || '0', 10) || 0);
+        }
+
+        const assistantText = String(data.text || '').trim();
+        if (assistantText) {
+          if (canRenderTranscript) {
+            addBubble('assistant', assistantText);
+          }
+          transcript.push({ role:'assistant', text: assistantText });
+          lastAssistantText = assistantText;
+          scheduleScrollToBottom('textResponse', { force: true });
+        }
+
+        setStatus('Ready');
+        if (els.save) els.save.disabled = transcript.length === 0;
+        renderSessionList();
+      } catch (err) {
+        logError('Text response failed', err);
+        setStatus('Error: ' + (err && err.message ? err.message : 'Unable to send message'));
+      } finally {
+        textRequestInFlight = false;
+        if (els.textSend) els.textSend.disabled = false;
+        if (els.textInput) els.textInput.disabled = false;
+        if (els.textInput) els.textInput.focus();
+      }
+    }
+
+    els.textSend?.addEventListener('click', async () => {
       if (!els.textInput) return;
-      sendTextMessage(els.textInput.value);
+      await sendTextMessage(els.textInput.value);
       els.textInput.value = '';
     });
 
@@ -989,8 +1129,7 @@
         if (pc) pc.close();
         if (micStream) micStream.getTracks().forEach(t => t.stop());
       } finally {
-        stopUserSTT();
-        pc = null; dc = null; micStream = null;
+        teardownRealtimeSession();
         els.stop.disabled = true;
         els.start.disabled = false;
         if (els.save) els.save.disabled = transcript.length === 0;
@@ -1031,13 +1170,9 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data?.message || 'Save failed');
         setStatus('Transcript saved (id '+data.id+')');
-        await loadHistory(String(data.id));
         await sendUsageUpdate('final', 'saved', true);
-        SESSION_ID = null;
-        activeContext = {};
-        resetSessionStats();
-        sessionActive = false;
-        setSessionState('idle');
+        resetCurrentSession({ status: 'Ready', activateView: false });
+        await loadHistory(String(data.id));
       } catch (e) {
         logError('Save failed', e);
         setStatus('Save error: ' + (e && e.message ? e.message : ''));
@@ -1078,7 +1213,9 @@
       }
     }
 
-    els.currentSessionButton?.addEventListener('click', activateCurrentSessionView);
+    els.currentSessionButton?.addEventListener('click', () => {
+      resetCurrentSession({ status: 'Ready' });
+    });
     els.sidebarToggle?.addEventListener('click', () => {
       setSidebarOpen(!sidebarOpen);
     });
@@ -1105,6 +1242,15 @@
       }
     });
 
+    els.textInput?.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      event.preventDefault();
+      const value = els.textInput.value;
+      if (!String(value || '').trim()) return;
+      await sendTextMessage(value);
+      els.textInput.value = '';
+    });
+
     loadHistory();
 
     if (canRenderTranscript && typeof MutationObserver !== 'undefined') {
@@ -1121,6 +1267,13 @@
         characterData: true
       });
       logDebug('Transcript observer attached');
+    }
+
+    if (mode === 'text') {
+      setStatus('Ready');
+      if (els.stop) els.stop.disabled = true;
+      if (els.start) els.start.disabled = false;
+      if (els.save) els.save.disabled = transcript.length === 0;
     }
 
     syncResponsiveLayout(true);

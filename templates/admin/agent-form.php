@@ -43,8 +43,18 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
         </td>
       </tr>
       <tr>
-        <th scope="row"><label for="agentos-default-model"><?php esc_html_e('Default Model', 'agentos'); ?></label></th>
-        <td><input type="text" id="agentos-default-model" name="agent[default_model]" value="<?php echo esc_attr($agent['default_model']); ?>" class="regular-text"></td>
+        <th scope="row"><label for="agentos-realtime-model"><?php esc_html_e('Realtime model', 'agentos'); ?></label></th>
+        <td>
+          <input type="text" id="agentos-realtime-model" name="agent[realtime_model]" value="<?php echo esc_attr($agent['realtime_model'] ?? $agent['default_model']); ?>" class="regular-text">
+          <p class="description"><?php esc_html_e('Used for voice sessions and the current hybrid realtime flow.', 'agentos'); ?></p>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><label for="agentos-text-model"><?php esc_html_e('Text model', 'agentos'); ?></label></th>
+        <td>
+          <input type="text" id="agentos-text-model" name="agent[text_model]" value="<?php echo esc_attr($agent['text_model'] ?? ''); ?>" class="regular-text">
+          <p class="description"><?php esc_html_e('Used for text-only conversations through the OpenAI Responses API.', 'agentos'); ?></p>
+        </td>
       </tr>
       <tr>
         <th scope="row"><label for="agentos-default-voice"><?php esc_html_e('Default Voice', 'agentos'); ?></label></th>

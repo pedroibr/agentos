@@ -61,6 +61,16 @@ class RestController
 
         register_rest_route(
             'agentos/v1',
+            '/text-response',
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'permission_callback' => [$this, 'permissionNonce'],
+                'callback' => [$this, 'routeTextResponse'],
+            ]
+        );
+
+        register_rest_route(
+            'agentos/v1',
             '/transcript-db',
             [
                 'methods' => WP_REST_Server::CREATABLE,
@@ -407,6 +417,177 @@ class RestController
         ];
     }
 
+    public function routeTextResponse(WP_REST_Request $request)
+    {
+        $postId = intval($request->get_param('post_id') ?: 0);
+        $agentId = sanitize_key($request->get_param('agent_id') ?: '');
+        $sessionId = sanitize_text_field($request->get_param('session_id') ?: '');
+        $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
+        $message = sanitize_textarea_field($request->get_param('message') ?: '');
+        $transcript = $request->get_param('transcript');
+        $tokensText = max(0, intval($request->get_param('tokens_text') ?: 0));
+        $tokensTotal = max(0, intval($request->get_param('tokens_total') ?: 0));
+        $durationSeconds = max(0, intval($request->get_param('duration_seconds') ?: 0));
+
+        if (!$postId) {
+            return new WP_Error('no_post', __('post_id required', 'agentos'), ['status' => 400]);
+        }
+
+        if (!$agentId) {
+            return new WP_Error('no_agent', __('agent_id required', 'agentos'), ['status' => 400]);
+        }
+
+        if ($message === '') {
+            return new WP_Error('no_message', __('message required', 'agentos'), ['status' => 400]);
+        }
+
+        if (!is_array($transcript)) {
+            return new WP_Error('bad_payload', __('transcript must be an array.', 'agentos'), ['status' => 400]);
+        }
+
+        $post = get_post($postId);
+        if (!$post || $post->post_status === 'trash') {
+            return new WP_Error('invalid_post', __('Post not found.', 'agentos'), ['status' => 404]);
+        }
+
+        if (post_password_required($post)) {
+            return new WP_Error('forbidden_post', __('You do not have access to this content.', 'agentos'), ['status' => 403]);
+        }
+
+        if (!current_user_can('read_post', $postId) && !is_post_publicly_viewable($post)) {
+            return new WP_Error('forbidden_post', __('You do not have access to this content.', 'agentos'), ['status' => 403]);
+        }
+
+        $agent = $this->agents->get($agentId);
+        if (!$agent) {
+            return new WP_Error('invalid_agent', __('Agent not found', 'agentos'), ['status' => 404]);
+        }
+
+        $postType = get_post_type($postId);
+        if ($agent['post_types'] && !in_array($postType, $agent['post_types'], true)) {
+            return new WP_Error('agent_unavailable', __('Agent not available for this post type.', 'agentos'), ['status' => 403]);
+        }
+
+        $config = $this->agents->collectPostConfig($agent, $postId);
+        if (!$sessionId) {
+            $sessionId = wp_generate_password(16, false);
+        }
+
+        $userKey = $this->resolveUserKey($anonId);
+        $limitResult = $this->limiter->evaluate($userKey, $agent);
+        if (empty($limitResult['allowed'])) {
+            $status = isset($limitResult['status']) ? (int) $limitResult['status'] : 402;
+            $messageText = $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos');
+            $code = $limitResult['error_code'] ?? 'subscription_limit';
+            return new WP_Error($code, $messageText, ['status' => $status]);
+        }
+
+        $subscriptionSlug = $limitResult['subscription_slug'] ?? '';
+        $sessionCap = isset($limitResult['session_cap']) ? (int) $limitResult['session_cap'] : 0;
+
+        if ($userKey) {
+            $this->userSubscriptions->ensureUser($userKey, []);
+        }
+
+        $this->usage->logStart([
+            'session_id' => $sessionId,
+            'user_key' => $userKey,
+            'subscription_slug' => $subscriptionSlug,
+            'agent_id' => $agentId,
+            'post_id' => $postId,
+            'status' => 'running',
+            'metadata' => [
+                'origin' => 'text_response',
+                'mode' => 'text',
+            ],
+        ]);
+
+        $apiKey = $this->settings->resolveApiKey();
+        if (!$apiKey) {
+            return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
+        }
+
+        $settings = $this->settings->get();
+        $allowedContext = !empty($agent['context_params']) ? (array) $agent['context_params'] : (array) ($settings['context_params'] ?? []);
+        $contextData = $this->sanitizeContextPayload($request->get_param('ctx'), $allowedContext);
+        $instructions = $this->buildInstructions($config['instructions'] ?? '', $contextData);
+        $input = $this->buildResponsesInput($transcript, (string) ($config['user_prompt'] ?? ''));
+        $textModel = sanitize_text_field($config['text_model'] ?? Config::FALLBACK_TEXT_MODEL) ?: Config::FALLBACK_TEXT_MODEL;
+
+        $payload = [
+            'model' => $textModel,
+            'instructions' => $instructions,
+            'input' => $input,
+        ];
+
+        $response = wp_remote_post(
+            'https://api.openai.com/v1/responses',
+            [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $apiKey,
+                    'Content-Type' => 'application/json',
+                ],
+                'body' => wp_json_encode($payload),
+                'timeout' => 40,
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return new WP_Error('openai_transport', $response->get_error_message(), ['status' => 500]);
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        $json = json_decode($body, true);
+        if ($code >= 400 || !is_array($json)) {
+            return new WP_Error('openai_http', $body ?: __('Unknown error', 'agentos'), ['status' => $code ?: 500]);
+        }
+
+        $assistantText = $this->extractResponsesText($json);
+        if ($assistantText === '') {
+            return new WP_Error('openai_empty', __('The model returned an empty response.', 'agentos'), ['status' => 502]);
+        }
+
+        $usage = is_array($json['usage'] ?? null) ? $json['usage'] : [];
+        $requestTokens = max(0, (int) ($usage['total_tokens'] ?? 0));
+        $nextTextTokens = $tokensText + $requestTokens;
+        $nextTotalTokens = max($tokensTotal + $requestTokens, $nextTextTokens);
+
+        $this->usage->updateBySession($sessionId, [
+            'user_key' => $userKey,
+            'subscription_slug' => $subscriptionSlug,
+            'agent_id' => $agentId,
+            'post_id' => $postId,
+            'tokens_text' => $nextTextTokens,
+            'tokens_total' => $nextTotalTokens,
+            'duration_seconds' => $durationSeconds,
+            'status' => 'running',
+            'metadata' => [
+                'mode' => 'text',
+                'origin' => 'text_response',
+                'input_tokens' => max(0, (int) ($usage['input_tokens'] ?? 0)),
+                'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+            ],
+        ]);
+
+        return [
+            'text' => $assistantText,
+            'model' => $textModel,
+            'session_id' => $sessionId,
+            'subscription' => $subscriptionSlug,
+            'session_cap' => $sessionCap,
+            'warnings' => $limitResult['warnings'] ?? [],
+            'context' => $contextData,
+            'usage' => [
+                'input_tokens' => max(0, (int) ($usage['input_tokens'] ?? 0)),
+                'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+                'total_tokens' => $requestTokens,
+                'session_text_tokens' => $nextTextTokens,
+                'session_total_tokens' => $nextTotalTokens,
+            ],
+        ];
+    }
+
     public function routeTranscriptSave(WP_REST_Request $request)
     {
         $postId = intval($request->get_param('post_id') ?: 0);
@@ -569,6 +750,120 @@ class RestController
             unset($row['user_email'], $row['user_agent'], $row['analysis_prompt']);
             return $row;
         }, $rows);
+    }
+
+    private function sanitizeContextPayload($payload, array $allowed): array
+    {
+        $context = [];
+        if (!is_array($payload)) {
+            return $context;
+        }
+
+        foreach ($payload as $key => $value) {
+            if (!in_array($key, $allowed, true)) {
+                continue;
+            }
+
+            $cleanKey = preg_replace('/[^a-z0-9_\-]/i', '', (string) $key);
+            $cleanValue = sanitize_text_field($value);
+            if ($cleanKey && $cleanValue !== '') {
+                $context[$cleanKey] = $cleanValue;
+            }
+        }
+
+        return $context;
+    }
+
+    private function buildInstructions(string $instructions, array $context): string
+    {
+        $instructions = $instructions ?: Config::FALLBACK_PROMPT;
+        if (!$context) {
+            return $instructions;
+        }
+
+        $pairs = [];
+        foreach ($context as $key => $value) {
+            $pairs[] = $key . '=' . $value;
+        }
+
+        return $instructions . "\n\nContext: " . implode(', ', $pairs) . '.';
+    }
+
+    private function buildResponsesInput(array $transcript, string $userPrompt = ''): array
+    {
+        $items = [];
+
+        if ($userPrompt !== '') {
+            $items[] = [
+                'role' => 'user',
+                'content' => [
+                    [
+                        'type' => 'input_text',
+                        'text' => "User Prompt:\n" . $userPrompt,
+                    ],
+                ],
+            ];
+        }
+
+        foreach ($transcript as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $role = sanitize_key($entry['role'] ?? '');
+            $text = trim((string) ($entry['text'] ?? ''));
+            if ($text === '' || !in_array($role, ['user', 'assistant'], true)) {
+                continue;
+            }
+
+            $items[] = [
+                'role' => $role,
+                'content' => [
+                    [
+                        'type' => $role === 'assistant' ? 'output_text' : 'input_text',
+                        'text' => $text,
+                    ],
+                ],
+            ];
+        }
+
+        return $items;
+    }
+
+    private function extractResponsesText(array $response): string
+    {
+        if (!empty($response['output_text']) && is_string($response['output_text'])) {
+            return trim($response['output_text']);
+        }
+
+        $parts = [];
+        foreach ((array) ($response['output'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            foreach ((array) ($item['content'] ?? []) as $content) {
+                if (!is_array($content)) {
+                    continue;
+                }
+
+                $type = $content['type'] ?? '';
+                if (!in_array($type, ['output_text', 'text'], true)) {
+                    continue;
+                }
+
+                if (isset($content['text']) && is_string($content['text'])) {
+                    $parts[] = $content['text'];
+                    continue;
+                }
+
+                if (isset($content['text']['value']) && is_string($content['text']['value'])) {
+                    $parts[] = $content['text']['value'];
+                }
+            }
+        }
+
+        return trim(implode('', $parts));
     }
 
     private function checkNonce(WP_REST_Request $request): bool

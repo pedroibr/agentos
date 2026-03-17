@@ -647,6 +647,11 @@
   display: none !important;
 }
 
+.agentos-wrap[data-mode="text"] .agentos-start,
+.agentos-wrap[data-mode="text"] .agentos-stop {
+  display: none !important;
+}
+
 .agentos-wrap[data-show-transcript="0"] .agentos-transcript {
   display: none;
 }
