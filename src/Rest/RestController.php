@@ -108,6 +108,56 @@ class RestController
                 'callback' => [$this, 'routeUserSubscriptionsSet'],
             ]
         );
+
+        register_rest_route(
+            'agentos/v1',
+            '/provision/user',
+            [
+                'methods' => WP_REST_Server::READABLE,
+                'permission_callback' => [$this, 'permissionIntegrationApi'],
+                'callback' => [$this, 'routeProvisionUserGet'],
+            ]
+        );
+
+        register_rest_route(
+            'agentos/v1',
+            '/provision/user',
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'permission_callback' => [$this, 'permissionIntegrationApi'],
+                'callback' => [$this, 'routeProvisionUserUpsert'],
+            ]
+        );
+
+        register_rest_route(
+            'agentos/v1',
+            '/provision/user',
+            [
+                'methods' => WP_REST_Server::DELETABLE,
+                'permission_callback' => [$this, 'permissionIntegrationApi'],
+                'callback' => [$this, 'routeProvisionUserDelete'],
+            ]
+        );
+
+        register_rest_route(
+            'agentos/v1',
+            '/provision/user/subscriptions',
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'permission_callback' => [$this, 'permissionIntegrationApi'],
+                'callback' => [$this, 'routeProvisionUserSubscriptionsSet'],
+            ]
+        );
+
+        register_rest_route(
+            'agentos/v1',
+            '/provision/user/subscriptions',
+            [
+                'methods' => WP_REST_Server::DELETABLE,
+                'permission_callback' => [$this, 'permissionIntegrationApi'],
+                'callback' => [$this, 'routeProvisionUserSubscriptionsDelete'],
+            ]
+        );
     }
 
     public function permissionNonce(WP_REST_Request $request)
@@ -176,6 +226,28 @@ class RestController
     public function permissionManage(): bool
     {
         return current_user_can('manage_options');
+    }
+
+    public function permissionIntegrationApi(WP_REST_Request $request)
+    {
+        if (!$this->settings->isIntegrationApiEnabled()) {
+            return new WP_Error(
+                'rest_forbidden',
+                __('Integration API is disabled.', 'agentos'),
+                ['status' => 403]
+            );
+        }
+
+        $token = $this->extractIntegrationApiToken($request);
+        if ($token !== '' && $this->settings->verifyIntegrationApiKey($token)) {
+            return true;
+        }
+
+        return new WP_Error(
+            'rest_forbidden',
+            __('Invalid or missing integration API key.', 'agentos'),
+            ['status' => 403]
+        );
     }
 
     public function routeRealtimeToken(WP_REST_Request $request)
@@ -577,6 +649,136 @@ class RestController
         return $this->prepareUserSubscriptionResponse($userKey);
     }
 
+    public function routeProvisionUserGet(WP_REST_Request $request)
+    {
+        $resolved = $this->resolveProvisionUser($request, false);
+        if (is_wp_error($resolved)) {
+            return $resolved;
+        }
+
+        return $this->prepareProvisionUserResponse($resolved['user_key']);
+    }
+
+    public function routeProvisionUserUpsert(WP_REST_Request $request)
+    {
+        $resolved = $this->resolveProvisionUser($request, true);
+        if (is_wp_error($resolved)) {
+            return $resolved;
+        }
+
+        $this->userSubscriptions->ensureUser($resolved['user_key'], $resolved['meta']);
+        $this->userSubscriptions->saveUserMeta($resolved['user_key'], $resolved['meta']);
+
+        return $this->prepareProvisionUserResponse($resolved['user_key']);
+    }
+
+    public function routeProvisionUserDelete(WP_REST_Request $request)
+    {
+        $resolved = $this->resolveProvisionUser($request, false);
+        if (is_wp_error($resolved)) {
+            return $resolved;
+        }
+
+        $userKey = $resolved['user_key'];
+        $this->userSubscriptions->deleteUser($userKey);
+        $this->usage->deleteForUser($userKey);
+        $this->transcripts->deleteForUser($userKey);
+
+        return [
+            'deleted' => true,
+            'user_key' => $userKey,
+        ];
+    }
+
+    public function routeProvisionUserSubscriptionsSet(WP_REST_Request $request)
+    {
+        $resolved = $this->resolveProvisionUser($request, true);
+        if (is_wp_error($resolved)) {
+            return $resolved;
+        }
+
+        $payload = $request->get_param('subscriptions');
+        if (!is_array($payload)) {
+            return new WP_Error('invalid_payload', __('subscriptions must be an array.', 'agentos'), ['status' => 400]);
+        }
+
+        $replace = !empty($request->get_param('replace'));
+        $plans = $this->subscriptions->all();
+        $userKey = $resolved['user_key'];
+        $slugs = [];
+
+        $this->userSubscriptions->ensureUser($userKey, $resolved['meta']);
+        $this->userSubscriptions->saveUserMeta($userKey, $resolved['meta']);
+
+        foreach ($payload as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $slug = sanitize_key($item['slug'] ?? ($item['subscription_slug'] ?? ''));
+            if ($slug === '' || !isset($plans[$slug])) {
+                continue;
+            }
+
+            $expiresAt = isset($item['expires_at']) ? sanitize_text_field($item['expires_at']) : null;
+            $overrides = isset($item['overrides']) && is_array($item['overrides']) ? $item['overrides'] : [];
+            $this->userSubscriptions->assign($userKey, $slug, $overrides, $expiresAt ?: null);
+            $slugs[] = $slug;
+        }
+
+        if ($replace) {
+            $existing = $this->userSubscriptions->get($userKey, true);
+            foreach ($existing as $entry) {
+                if (!in_array($entry['subscription_slug'], $slugs, true)) {
+                    $this->userSubscriptions->remove($userKey, $entry['subscription_slug']);
+                }
+            }
+        }
+
+        return $this->prepareProvisionUserResponse($userKey);
+    }
+
+    public function routeProvisionUserSubscriptionsDelete(WP_REST_Request $request)
+    {
+        $resolved = $this->resolveProvisionUser($request, false);
+        if (is_wp_error($resolved)) {
+            return $resolved;
+        }
+
+        $userKey = $resolved['user_key'];
+        $removed = [];
+        $subscriptionSlug = sanitize_key($request->get_param('subscription_slug') ?: '');
+        if ($subscriptionSlug !== '') {
+            $this->userSubscriptions->remove($userKey, $subscriptionSlug);
+            $removed[] = $subscriptionSlug;
+        }
+
+        $subscriptionSlugs = $request->get_param('subscription_slugs');
+        if (is_array($subscriptionSlugs)) {
+            foreach ($subscriptionSlugs as $slug) {
+                $cleanSlug = sanitize_key((string) $slug);
+                if ($cleanSlug === '' || in_array($cleanSlug, $removed, true)) {
+                    continue;
+                }
+                $this->userSubscriptions->remove($userKey, $cleanSlug);
+                $removed[] = $cleanSlug;
+            }
+        }
+
+        if (!$removed) {
+            return new WP_Error(
+                'missing_subscription_slug',
+                __('subscription_slug or subscription_slugs is required.', 'agentos'),
+                ['status' => 400]
+            );
+        }
+
+        $response = $this->prepareProvisionUserResponse($userKey);
+        $response['removed_subscriptions'] = $removed;
+
+        return $response;
+    }
+
     private function prepareUserSubscriptionResponse(string $userKey): array
     {
         $assignments = $this->userSubscriptions->get($userKey, true);
@@ -608,6 +810,14 @@ class RestController
             'meta' => $meta[$userKey] ?? [],
             'subscriptions' => $subscriptions,
         ];
+    }
+
+    private function prepareProvisionUserResponse(string $userKey): array
+    {
+        $response = $this->prepareUserSubscriptionResponse($userKey);
+        $response['usage'] = $this->usage->summarizeUserTotals($userKey);
+
+        return $response;
     }
 
     public function routeUsageUpdate(WP_REST_Request $request)
@@ -673,6 +883,88 @@ class RestController
                 'text' => $tokensText,
                 'total' => $tokensTotal,
             ],
+        ];
+    }
+
+    private function extractIntegrationApiToken(WP_REST_Request $request): string
+    {
+        $authorization = trim((string) $request->get_header('authorization'));
+        if ($authorization !== '' && preg_match('/^Bearer\s+(.+)$/i', $authorization, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return trim((string) $request->get_header('x-agentos-api-key'));
+    }
+
+    private function resolveProvisionUser(WP_REST_Request $request, bool $allowMetaUpdates)
+    {
+        $metaPayload = $request->get_param('meta');
+        $metaPayload = is_array($metaPayload) ? $metaPayload : [];
+
+        $userKey = sanitize_text_field($request->get_param('user_key') ?: '');
+        $email = sanitize_email($request->get_param('email') ?: '');
+        if ($email === '' && isset($metaPayload['email'])) {
+            $email = sanitize_email($metaPayload['email']);
+        }
+
+        if ($userKey === '' && $email !== '') {
+            $user = get_user_by('email', $email);
+            if ($user instanceof \WP_User && $user->exists()) {
+                $userKey = 'user_' . (int) $user->ID;
+            }
+        }
+
+        if ($userKey === '') {
+            return new WP_Error(
+                'missing_user_key',
+                __('user_key or email is required.', 'agentos'),
+                ['status' => 400]
+            );
+        }
+
+        if (!preg_match('/^user_(\d+)$/', $userKey, $matches)) {
+            return new WP_Error(
+                'invalid_user_key',
+                __('user_key must use the format user_{wp_user_id}.', 'agentos'),
+                ['status' => 400]
+            );
+        }
+
+        $wpUserId = (int) $matches[1];
+        $wpUser = get_user_by('id', $wpUserId);
+        if (!$wpUser instanceof \WP_User || !$wpUser->exists()) {
+            return new WP_Error(
+                'user_missing',
+                __('The referenced WordPress user does not exist.', 'agentos'),
+                ['status' => 404]
+            );
+        }
+
+        $existingMetaAll = $this->userSubscriptions->getUserMeta();
+        $existingMeta = $existingMetaAll[$userKey] ?? [];
+        $meta = [
+            'name' => $existingMeta['name'] ?? ($wpUser->display_name ?: $wpUser->user_login),
+            'email' => sanitize_email($wpUser->user_email),
+            'notes' => $existingMeta['notes'] ?? '',
+            'wp_user_id' => $wpUserId,
+        ];
+
+        if ($allowMetaUpdates) {
+            if (isset($metaPayload['name'])) {
+                $meta['name'] = sanitize_text_field($metaPayload['name']);
+            } elseif (isset($metaPayload['label'])) {
+                $meta['name'] = sanitize_text_field($metaPayload['label']);
+            }
+
+            if (isset($metaPayload['notes'])) {
+                $meta['notes'] = sanitize_textarea_field($metaPayload['notes']);
+            }
+        }
+
+        return [
+            'user_key' => $userKey,
+            'wp_user' => $wpUser,
+            'meta' => $meta,
         ];
     }
 }

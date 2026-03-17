@@ -130,6 +130,7 @@ class AdminController
         $this->view->render('admin/settings', [
             'option_key' => Config::OPTION_SETTINGS,
             'settings' => $this->settings->get(),
+            'message' => isset($_GET['message']) ? sanitize_key($_GET['message']) : '',
         ]);
     }
 
@@ -922,11 +923,31 @@ class AdminController
         if ($userKey) {
             $this->userSubscriptions->deleteUser($userKey);
             $this->usage->deleteForUser($userKey);
+            $this->transcripts->deleteForUser($userKey);
         }
 
         wp_safe_redirect(
             add_query_arg(
                 ['page' => 'agentos-users', 'message' => 'user_deleted'],
+                admin_url('admin.php')
+            )
+        );
+        exit;
+    }
+
+    public function handleGenerateIntegrationApiKey(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+
+        check_admin_referer('agentos_generate_integration_api_key');
+
+        $this->settings->generateIntegrationApiKey();
+
+        wp_safe_redirect(
+            add_query_arg(
+                ['page' => 'agentos-settings', 'message' => 'integration_api_key_generated'],
                 admin_url('admin.php')
             )
         );

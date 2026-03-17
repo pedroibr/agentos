@@ -4,6 +4,7 @@
  *
  * @var string $option_key
  * @var array  $settings
+ * @var string $message
  */
 if (!defined('ABSPATH')) {
     exit;
@@ -41,8 +42,50 @@ if (!defined('ABSPATH')) {
           </label>
         </td>
       </tr>
+      <tr>
+        <th scope="row"><?php esc_html_e('Enable Integration API', 'agentos'); ?></th>
+        <td>
+          <label>
+            <input type="checkbox" name="<?php echo esc_attr($option_key); ?>[integration_api_enabled]" value="1" <?php checked(!empty($settings['integration_api_enabled'])); ?>>
+            <?php esc_html_e('Allow external automation tools to call AgentOS provisioning endpoints using a Bearer API key.', 'agentos'); ?>
+          </label>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row"><?php esc_html_e('Integration API Key', 'agentos'); ?></th>
+        <td>
+          <?php if (!empty($settings['integration_api_key_plain'])) : ?>
+            <p>
+              <strong><?php esc_html_e('Current API key:', 'agentos'); ?></strong>
+            </p>
+            <p>
+              <input type="text" readonly style="width:420px" value="<?php echo esc_attr($settings['integration_api_key_plain']); ?>" onclick="this.select();">
+            </p>
+          <?php else : ?>
+            <p><?php esc_html_e('No integration API key generated yet.', 'agentos'); ?></p>
+          <?php endif; ?>
+          <?php if (!empty($settings['integration_api_key_generated_at'])) : ?>
+            <p class="description">
+              <?php
+              printf(
+                  esc_html__('Generated at: %s', 'agentos'),
+                  esc_html(mysql2date(get_option('date_format') . ' ' . get_option('time_format'), $settings['integration_api_key_generated_at']))
+              );
+              ?>
+            </p>
+          <?php endif; ?>
+          <p class="description"><?php esc_html_e('Send this key as Authorization: Bearer YOUR_KEY to the provisioning endpoints.', 'agentos'); ?></p>
+        </td>
+      </tr>
     </table>
-    <?php submit_button(); ?>
+    <p class="submit">
+      <button type="submit" name="agentos_generate_integration_api_key" value="1" class="button button-secondary">
+        <?php echo esc_html(!empty($settings['integration_api_key_hash']) ? __('Regenerate API Key', 'agentos') : __('Generate API Key', 'agentos')); ?>
+      </button>
+      <button type="submit" class="button button-primary">
+        <?php esc_html_e('Save Changes', 'agentos'); ?>
+      </button>
+    </p>
   </form>
   <script>
     (function(){
