@@ -91,6 +91,7 @@ class Plugin
         add_action('admin_post_agentos_save_user', [$this->admin, 'handleUserSave']);
         add_action('admin_post_agentos_delete_user', [$this->admin, 'handleUserDelete']);
         add_action('admin_post_agentos_generate_integration_api_key', [$this->admin, 'handleGenerateIntegrationApiKey']);
+        add_action('admin_post_agentos_delete_transcript', [$this->admin, 'handleTranscriptDelete']);
 
         add_action('wp_enqueue_scripts', [$this->assets, 'registerFrontend']);
 
