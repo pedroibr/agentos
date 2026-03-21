@@ -381,12 +381,14 @@
 
     function clearTranscriptLog(options = {}) {
       if (!canRenderTranscript) return;
+      cancelScheduledScroll();
       Array.from(els.log.querySelectorAll('.msg')).forEach((node) => node.remove());
       if (options.scrollMode === 'top') {
         autoScrollPinned = false;
         els.log.scrollTop = 0;
         return;
       }
+      if (options.suppressScroll) return;
       autoScrollPinned = true;
       scheduleScrollToBottom('clearTranscript', { force: true });
     }
@@ -394,22 +396,26 @@
     function renderTranscriptEntries(entries, options = {}) {
       if (!canRenderTranscript) return;
       const scrollMode = options.scrollMode || 'bottom';
-      clearTranscriptLog({ scrollMode });
-      if (!Array.isArray(entries)) return;
-      entries.forEach((entry) => {
-        if (!entry || !entry.role) return;
-        addBubble(entry.role, entry.text || '', null, {
-          forceRender: true,
-          suppressScroll: scrollMode === 'top'
+      const instant = options.instant !== false;
+      suppressTranscriptMutationScroll();
+      clearTranscriptLog({ scrollMode, suppressScroll: true });
+      if (Array.isArray(entries)) {
+        entries.forEach((entry) => {
+          if (!entry || !entry.role) return;
+          addBubble(entry.role, entry.text || '', null, {
+            forceRender: true,
+            suppressScroll: true
+          });
         });
-      });
+      }
       if (scrollMode === 'top') {
         autoScrollPinned = false;
+        cancelScheduledScroll();
         els.log.scrollTop = 0;
         return;
       }
       autoScrollPinned = true;
-      scheduleScrollToBottom('renderTranscriptEntries', { force: true });
+      scheduleScrollToBottom('renderTranscriptEntries', { force: true, instant });
     }
 
     function renderSessionList() {
@@ -447,7 +453,8 @@
       });
     }
 
-    function activateCurrentSessionView() {
+    function activateCurrentSessionView(options = {}) {
+      const wasViewingSavedSession = !!selectedSessionId;
       selectedSessionId = null;
       setFeedbackMode('inline');
       if (els.workspaceTitle) els.workspaceTitle.textContent = 'Current session';
@@ -455,7 +462,18 @@
       if (els.transcriptStatus) els.transcriptStatus.textContent = sessionActive ? 'Live' : 'Ready';
       if (els.sessionSummary) els.sessionSummary.textContent = 'Current live session';
       renderFeedback(null);
-      renderTranscriptEntries(transcript, { scrollMode: 'bottom' });
+      const needsTranscriptRender = canRenderTranscript && (
+        !!options.forceRender ||
+        wasViewingSavedSession ||
+        transcript.length === 0 ||
+        !els.log.querySelector('.msg')
+      );
+      if (needsTranscriptRender) {
+        renderTranscriptEntries(transcript, {
+          scrollMode: 'bottom',
+          instant: options.instant !== false
+        });
+      }
       renderSessionList();
       closeSidebarIfCompact();
     }
@@ -708,7 +726,7 @@
       if (els.transcriptStatus) els.transcriptStatus.textContent = item.analysis_status || 'Saved';
       if (els.sessionSummary) els.sessionSummary.textContent = sessionSummaryText(item);
       renderFeedback(item);
-      renderTranscriptEntries(item.transcript || [], { scrollMode: 'top' });
+      renderTranscriptEntries(item.transcript || [], { scrollMode: 'top', instant: true });
       renderSessionList();
       closeSidebarIfCompact();
     }
@@ -747,6 +765,8 @@
     let scrollAnimationActive = false;
     let autoScrollPinned = true;
     let lastScrollScheduleAt = 0;
+    let transcriptMutationScrollSuppressed = false;
+    let transcriptMutationScrollResumeTimer = 0;
     const STREAM_SCROLL_THROTTLE_MS = 120;
     const DEFAULT_SCROLL_THROTTLE_MS = 40;
     const SCROLL_BOTTOM_THRESHOLD = 72;
@@ -772,18 +792,42 @@
       autoScrollPinned = isNearTranscriptBottom();
     }
 
+    function suppressTranscriptMutationScroll() {
+      transcriptMutationScrollSuppressed = true;
+      if (transcriptMutationScrollResumeTimer) {
+        clearTimeout(transcriptMutationScrollResumeTimer);
+      }
+      transcriptMutationScrollResumeTimer = setTimeout(() => {
+        transcriptMutationScrollResumeTimer = 0;
+        transcriptMutationScrollSuppressed = false;
+      }, 0);
+    }
+
     function applyScrollPosition(nextTop) {
       if (!canRenderTranscript) return;
       scrollAnimationActive = true;
       els.log.scrollTop = nextTop;
     }
 
-    function finishScrollAnimation() {
+    function cancelScheduledScroll(options = {}) {
+      if (scrollFlushTimer) {
+        clearTimeout(scrollFlushTimer);
+        scrollFlushTimer = 0;
+      }
       if (scrollRaf) {
         cancelAnimationFrame(scrollRaf);
         scrollRaf = 0;
       }
       scrollAnimationActive = false;
+      scrollForcePending = false;
+      lastScrollScheduleAt = 0;
+      if (options.updatePinned) {
+        updateAutoScrollPinned();
+      }
+    }
+
+    function finishScrollAnimation() {
+      cancelScheduledScroll();
       updateAutoScrollPinned();
       logScrollMetrics(scrollSource);
     }
@@ -802,7 +846,7 @@
       scrollRaf = requestAnimationFrame(animateScrollStep);
     }
 
-    function flushScrollToBottom(source = 'manual', force = false) {
+    function flushScrollToBottom(source = 'manual', force = false, instant = false) {
       if (!canRenderTranscript) return;
       if (!force && !autoScrollPinned) return;
       if (scrollFlushTimer) {
@@ -811,6 +855,11 @@
       }
       scrollSource = source;
       scrollTarget = Math.max(0, els.log.scrollHeight - els.log.clientHeight);
+      if (instant) {
+        applyScrollPosition(scrollTarget);
+        finishScrollAnimation();
+        return;
+      }
       if (Math.abs(scrollTarget - els.log.scrollTop) <= 1.5) {
         applyScrollPosition(scrollTarget);
         finishScrollAnimation();
@@ -824,10 +873,16 @@
     function scheduleScrollToBottom(source = 'manual', options = {}){
       if (!canRenderTranscript) return;
       const force = !!options.force;
+      const instant = !!options.instant;
       const streaming = !!options.streaming;
       if (!force && !autoScrollPinned) return;
       scrollSource = source;
       scrollForcePending = scrollForcePending || force;
+      if (instant) {
+        flushScrollToBottom(source, scrollForcePending, true);
+        scrollForcePending = false;
+        return;
+      }
       const throttleMs = streaming ? STREAM_SCROLL_THROTTLE_MS : DEFAULT_SCROLL_THROTTLE_MS;
       const now = Date.now();
       const elapsed = now - lastScrollScheduleAt;
@@ -1463,11 +1518,19 @@
     loadHistory();
 
     if (canRenderTranscript && typeof MutationObserver !== 'undefined') {
+      const cancelScrollFromUserIntent = () => {
+        if (!scrollAnimationActive && !scrollRaf && !scrollFlushTimer) return;
+        cancelScheduledScroll({ updatePinned: true });
+      };
+      els.log.addEventListener('pointerdown', cancelScrollFromUserIntent, { passive: true });
+      els.log.addEventListener('wheel', cancelScrollFromUserIntent, { passive: true });
+      els.log.addEventListener('touchstart', cancelScrollFromUserIntent, { passive: true });
       els.log.addEventListener('scroll', () => {
         if (scrollAnimationActive) return;
         updateAutoScrollPinned();
       }, { passive: true });
       transcriptObserver = new MutationObserver(() => {
+        if (transcriptMutationScrollSuppressed) return;
         scheduleScrollToBottom('mutationObserver', { streaming: true });
       });
       transcriptObserver.observe(els.log, {
