@@ -15,6 +15,12 @@ class AgentRepository
             'text_model' => Config::FALLBACK_TEXT_MODEL,
             'default_voice' => Config::FALLBACK_VOICE,
             'base_prompt' => '',
+            'voice_turn_detection' => '',
+            'voice_turn_eagerness' => '',
+            'voice_turn_profile' => '',
+            'voice_noise_reduction' => '',
+            'speech_language_hint' => '',
+            'transcription_hint' => '',
             'context_params' => [],
             'show_post_image' => false,
             'show_post_title' => false,
@@ -134,6 +140,17 @@ class AgentRepository
         $agent['default_mode'] = in_array($mode, ['voice', 'text', 'both'], true) ? $mode : 'voice';
 
         $agent['base_prompt'] = sanitize_textarea_field($input['base_prompt'] ?? '');
+        $turnDetection = sanitize_key($input['voice_turn_detection'] ?? '');
+        $agent['voice_turn_detection'] = in_array($turnDetection, ['', 'semantic_vad', 'server_vad'], true) ? $turnDetection : '';
+        $turnEagerness = sanitize_key($input['voice_turn_eagerness'] ?? '');
+        $agent['voice_turn_eagerness'] = in_array($turnEagerness, ['', 'low', 'medium', 'high'], true) ? $turnEagerness : '';
+        $turnProfile = sanitize_key($input['voice_turn_profile'] ?? '');
+        $agent['voice_turn_profile'] = in_array($turnProfile, ['', 'conservative', 'balanced', 'fast'], true) ? $turnProfile : '';
+        $noiseReduction = sanitize_key($input['voice_noise_reduction'] ?? '');
+        $agent['voice_noise_reduction'] = in_array($noiseReduction, ['', 'near_field', 'far_field', 'off'], true) ? $noiseReduction : '';
+        $languageHint = sanitize_key($input['speech_language_hint'] ?? '');
+        $agent['speech_language_hint'] = in_array($languageHint, ['', 'en', 'pt'], true) ? $languageHint : '';
+        $agent['transcription_hint'] = sanitize_textarea_field($input['transcription_hint'] ?? '');
 
         $contextParams = $input['context_params'] ?? [];
         if (is_string($contextParams)) {
@@ -209,6 +226,12 @@ class AgentRepository
             'voice' => sanitize_text_field($voice),
             'instructions' => sanitize_textarea_field($instructions),
             'user_prompt' => sanitize_textarea_field($userPrompt),
+            'voice_turn_detection' => sanitize_key($agent['voice_turn_detection'] ?? ''),
+            'voice_turn_eagerness' => sanitize_key($agent['voice_turn_eagerness'] ?? ''),
+            'voice_turn_profile' => sanitize_key($agent['voice_turn_profile'] ?? ''),
+            'voice_noise_reduction' => sanitize_key($agent['voice_noise_reduction'] ?? ''),
+            'speech_language_hint' => sanitize_key($agent['speech_language_hint'] ?? ''),
+            'transcription_hint' => sanitize_textarea_field($agent['transcription_hint'] ?? ''),
             'mode' => $agent['default_mode'] ?? 'voice',
             'show_transcript' => !empty($agent['show_transcript']),
             'analysis_enabled' => !empty($agent['analysis_enabled']),

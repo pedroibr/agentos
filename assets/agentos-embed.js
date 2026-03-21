@@ -72,6 +72,7 @@
     const analysisEnabled = !!cfg.analysis_enabled;
     const requireSubscription = !!cfg.require_subscription;
     const sessionTokenCapDefault = parseInt(cfg.session_token_cap || '0', 10) || 0;
+    const transcriptionHint = String(cfg.transcription_hint || '').trim();
     const { info: logInfo, error: logError, debug: logDebug, warn: logWarn } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
@@ -138,6 +139,7 @@
     let inputRecorderActive = false;
     let inputRecorderDiscard = false;
     let sessionActive = false;
+    let bootstrapResponsePending = false;
     const transcript = []; // [{role,text}]
     const historyState = {
       loading: false
@@ -631,6 +633,7 @@
     }
 
     function teardownRealtimeSession() {
+      bootstrapResponsePending = false;
       try {
         if (pc) pc.close();
       } catch (_) {}
@@ -641,6 +644,21 @@
       pc = null;
       dc = null;
       micStream = null;
+    }
+
+    function setMicTracksEnabled(enabled) {
+      if (!micStream) return;
+      try {
+        micStream.getAudioTracks().forEach((track) => {
+          track.enabled = !!enabled;
+        });
+      } catch (_) {}
+    }
+
+    function finalizeBootstrapResponse() {
+      if (!bootstrapResponsePending) return;
+      bootstrapResponsePending = false;
+      setMicTracksEnabled(true);
     }
 
     function sendRealtimeHistoryMessage(role, text) {
@@ -665,9 +683,6 @@
     function restoreRealtimeConversation(userPrompt) {
       if (!dc || dc.readyState !== 'open') return;
       const transcriptHasHistory = Array.isArray(transcript) && transcript.length > 0;
-      if (transcriptHasHistory && userPrompt) {
-        sendRealtimeHistoryMessage('user', 'User Prompt:\n' + userPrompt);
-      }
       transcript.forEach((entry) => {
         if (!entry || !entry.role || !entry.text) return;
         sendRealtimeHistoryMessage(entry.role, entry.text);
@@ -971,9 +986,22 @@
     function normalizeText(input){
       return String(input || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     }
+    function looksLikeTranscriptionHintLeak(text){
+      const clean = normalizeText(text);
+      const hintClean = normalizeText(transcriptionHint);
+      if (!clean || !hintClean || hintClean.length < 12) return false;
+      if (clean === hintClean) return true;
+      if (clean.startsWith(hintClean) || clean.endsWith(hintClean)) {
+        return Math.abs(clean.length - hintClean.length) <= 12;
+      }
+      return false;
+    }
     function shouldIgnoreUserText(text){
       const clean = normalizeText(text);
       if (!clean || clean.length < 6) return false;
+      if (looksLikeTranscriptionHintLeak(text)) {
+        return true;
+      }
       const assistantClean = normalizeText(lastAssistantText);
       if (!assistantClean) return false;
       return assistantClean.includes(clean) || clean.includes(assistantClean);
@@ -1051,7 +1079,18 @@
         updateAssistant(ev.delta); return;
       }
       if (ev.type === 'response.output_text.done' || ev.type === 'response.completed') {
-        commitAssistant(); return;
+        commitAssistant();
+        return;
+      }
+      if (ev.type === 'response.output_audio.done') {
+        finalizeBootstrapResponse();
+        return;
+      }
+      if (ev.type === 'response.output_item.done') {
+        if (ev.item && ev.item.role === 'assistant' && ev.item.status === 'completed') {
+          finalizeBootstrapResponse();
+        }
+        return;
       }
       if (ev.type === 'response.created') {
         if (userBuffer) commitUserFromRealtime();
@@ -1062,7 +1101,10 @@
           return;
         }
         const text = ev.content.filter(p => p.type === 'output_text' && typeof p.text === 'string').map(p => p.text).join('');
-        if (text) { updateAssistant(text); commitAssistant(); }
+        if (text && normalizeText(text) !== normalizeText(lastAssistantText)) {
+          updateAssistant(text);
+          commitAssistant();
+        }
         return;
       }
       if (ev.type && String(ev.type).startsWith('response.') && typeof ev.delta === 'string' && ev.delta) {
@@ -1331,6 +1373,12 @@
         activeVoice = voice || '';
         window._agentosModel = activeModel;
         window._agentosVoice = activeVoice;
+        bootstrapResponsePending = !isResumeAttempt && transcript.length === 0 && !!String(user_prompt || '').trim();
+        if (bootstrapResponsePending) {
+          setMicTracksEnabled(false);
+        } else {
+          setMicTracksEnabled(true);
+        }
 
         // WebRTC peer
         pc = new RTCPeerConnection();

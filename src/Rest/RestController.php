@@ -373,15 +373,68 @@ class RestController
             $instructions .= "\n\nContext: " . implode(', ', $ctxPairs) . '.';
         }
 
+        $noiseReduction = sanitize_key($config['voice_noise_reduction'] ?? '');
+        if (!in_array($noiseReduction, ['near_field', 'far_field', 'off'], true)) {
+            $noiseReduction = 'near_field';
+        }
+
+        $turnDetectionType = sanitize_key($config['voice_turn_detection'] ?? '');
+        $turnEagerness = sanitize_key($config['voice_turn_eagerness'] ?? '');
+        if (!in_array($turnDetectionType, ['semantic_vad', 'server_vad'], true)) {
+            $turnProfile = sanitize_key($config['voice_turn_profile'] ?? '');
+            if ($turnProfile === 'fast') {
+                $turnDetectionType = 'server_vad';
+            } else {
+                $turnDetectionType = 'semantic_vad';
+            }
+        }
+        if (!in_array($turnEagerness, ['low', 'medium', 'high'], true)) {
+            $turnProfile = sanitize_key($config['voice_turn_profile'] ?? '');
+            if ($turnProfile === 'conservative') {
+                $turnEagerness = 'low';
+            } elseif ($turnProfile === 'balanced') {
+                $turnEagerness = 'medium';
+            } else {
+                $turnEagerness = 'medium';
+            }
+        }
+
+        $turnDetection = [
+            'type' => $turnDetectionType,
+            'create_response' => true,
+            'interrupt_response' => true,
+        ];
+        if ($turnDetectionType === 'semantic_vad') {
+            $turnDetection['eagerness'] = $turnEagerness;
+        } else {
+            $turnDetection['threshold'] = 0.6;
+            $turnDetection['prefix_padding_ms'] = 300;
+            $turnDetection['silence_duration_ms'] = 700;
+        }
+
         $payload = [
             'model' => $config['model'],
             'voice' => $config['voice'],
             'modalities' => ['audio', 'text'],
             'instructions' => $instructions,
             'input_audio_transcription' => [
-                'model' => 'whisper-1',
+                'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
             ],
+            'input_audio_noise_reduction' => $noiseReduction === 'off'
+                ? null
+                : ['type' => $noiseReduction],
+            'turn_detection' => $turnDetection,
         ];
+
+        $speechLanguageHint = sanitize_key($config['speech_language_hint'] ?? '');
+        if (in_array($speechLanguageHint, ['en', 'pt'], true)) {
+            $payload['input_audio_transcription']['language'] = $speechLanguageHint;
+        }
+
+        $transcriptionHint = sanitize_textarea_field($config['transcription_hint'] ?? '');
+        if ($transcriptionHint !== '') {
+            $payload['input_audio_transcription']['prompt'] = $transcriptionHint;
+        }
 
         $response = wp_remote_post(
             'https://api.openai.com/v1/realtime/sessions',

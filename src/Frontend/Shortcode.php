@@ -85,6 +85,7 @@ class Shortcode
             'analysis_enabled' => !empty($agent['analysis_enabled']),
             'require_subscription' => !empty($agent['require_subscription']),
             'session_token_cap' => isset($agent['session_token_cap']) ? (int) $agent['session_token_cap'] : 0,
+            'transcription_hint' => sanitize_textarea_field($agent['transcription_hint'] ?? ''),
         ];
 
         $template = $this->templateDir . '/frontend/shortcode.php';

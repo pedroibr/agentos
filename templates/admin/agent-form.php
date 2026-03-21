@@ -68,6 +68,50 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
         </td>
       </tr>
       <tr>
+        <th scope="row"><?php esc_html_e('Voice advanced', 'agentos'); ?></th>
+        <td>
+          <fieldset>
+            <label for="agentos-voice-turn-detection"><?php esc_html_e('Turn detection type', 'agentos'); ?></label><br>
+            <select id="agentos-voice-turn-detection" name="agent[voice_turn_detection]">
+              <option value="" <?php selected($agent['voice_turn_detection'] ?? '', ''); ?>><?php esc_html_e('Use default', 'agentos'); ?></option>
+              <option value="semantic_vad" <?php selected($agent['voice_turn_detection'] ?? '', 'semantic_vad'); ?>><?php esc_html_e('semantic_vad', 'agentos'); ?></option>
+              <option value="server_vad" <?php selected($agent['voice_turn_detection'] ?? '', 'server_vad'); ?>><?php esc_html_e('server_vad', 'agentos'); ?></option>
+            </select>
+            <p class="description"><?php esc_html_e('Controls how the agent decides that the user finished speaking. Default: semantic_vad.', 'agentos'); ?></p>
+
+            <label for="agentos-voice-turn-eagerness"><?php esc_html_e('Turn eagerness', 'agentos'); ?></label><br>
+            <select id="agentos-voice-turn-eagerness" name="agent[voice_turn_eagerness]">
+              <option value="" <?php selected($agent['voice_turn_eagerness'] ?? '', ''); ?>><?php esc_html_e('Use default', 'agentos'); ?></option>
+              <option value="low" <?php selected($agent['voice_turn_eagerness'] ?? '', 'low'); ?>><?php esc_html_e('low', 'agentos'); ?></option>
+              <option value="medium" <?php selected($agent['voice_turn_eagerness'] ?? '', 'medium'); ?>><?php esc_html_e('medium', 'agentos'); ?></option>
+              <option value="high" <?php selected($agent['voice_turn_eagerness'] ?? '', 'high'); ?>><?php esc_html_e('high', 'agentos'); ?></option>
+            </select>
+            <p class="description"><?php esc_html_e('Only used with semantic_vad. Higher values respond faster; lower values wait longer. Default: medium.', 'agentos'); ?></p>
+
+            <label for="agentos-voice-noise-reduction"><?php esc_html_e('Microphone environment', 'agentos'); ?></label><br>
+            <select id="agentos-voice-noise-reduction" name="agent[voice_noise_reduction]">
+              <option value="" <?php selected($agent['voice_noise_reduction'] ?? '', ''); ?>><?php esc_html_e('Use default', 'agentos'); ?></option>
+              <option value="near_field" <?php selected($agent['voice_noise_reduction'] ?? '', 'near_field'); ?>><?php esc_html_e('Headset / Close mic', 'agentos'); ?></option>
+              <option value="far_field" <?php selected($agent['voice_noise_reduction'] ?? '', 'far_field'); ?>><?php esc_html_e('Room / Laptop', 'agentos'); ?></option>
+              <option value="off" <?php selected($agent['voice_noise_reduction'] ?? '', 'off'); ?>><?php esc_html_e('Off', 'agentos'); ?></option>
+            </select>
+            <p class="description"><?php esc_html_e('Controls background-noise handling for voice input. Default: Headset / Close mic (near_field).', 'agentos'); ?></p>
+
+            <label for="agentos-speech-language-hint"><?php esc_html_e('Speech language hint', 'agentos'); ?></label><br>
+            <select id="agentos-speech-language-hint" name="agent[speech_language_hint]">
+              <option value="" <?php selected($agent['speech_language_hint'] ?? '', ''); ?>><?php esc_html_e('Auto', 'agentos'); ?></option>
+              <option value="en" <?php selected($agent['speech_language_hint'] ?? '', 'en'); ?>><?php esc_html_e('English', 'agentos'); ?></option>
+              <option value="pt" <?php selected($agent['speech_language_hint'] ?? '', 'pt'); ?>><?php esc_html_e('Portuguese', 'agentos'); ?></option>
+            </select>
+            <p class="description"><?php esc_html_e('Optional hint for speech transcription when this agent usually speaks one language. Default: Auto.', 'agentos'); ?></p>
+
+            <label for="agentos-transcription-hint"><?php esc_html_e('Transcription hint', 'agentos'); ?></label><br>
+            <textarea id="agentos-transcription-hint" name="agent[transcription_hint]" rows="3" class="large-text"><?php echo esc_textarea($agent['transcription_hint'] ?? ''); ?></textarea>
+            <p class="description"><?php esc_html_e('Optional context for the transcription model, such as keywords, lesson topic, product names, or expected accents. Prefer short keywords instead of full sentences. Default: empty.', 'agentos'); ?></p>
+          </fieldset>
+        </td>
+      </tr>
+      <tr>
         <th scope="row"><label for="agentos-context-params"><?php esc_html_e('Allowed URL context parameters', 'agentos'); ?></label></th>
         <td>
           <input type="text" id="agentos-context-params" name="agent[context_params]" value="<?php echo esc_attr(implode(',', $agent['context_params'] ?? [])); ?>" class="regular-text" style="width:420px">
