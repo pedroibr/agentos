@@ -1,5 +1,10 @@
 # Updates
 
+## 10.3.2 - 2026-04-28
+
+- Reworked the mobile session layout to keep the header and footer anchored while the conversation area fills the available height and scrolls independently.
+- Compacted the mobile voice controls into a single fixed row with simpler play, stop, and save icons.
+
 ## 10.3.1 - 2026-04-28
 
 - Limited sidebar session history to authenticated users and synchronized saved sessions by WordPress account across devices.

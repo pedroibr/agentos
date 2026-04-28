@@ -4,7 +4,7 @@ namespace AgentOS\Core;
 
 class Config
 {
-    public const VERSION = '10.3.1';
+    public const VERSION = '10.3.2';
 
     public const OPTION_SETTINGS = 'agentos_settings';
     public const OPTION_AGENTS   = 'agentos_agents';
