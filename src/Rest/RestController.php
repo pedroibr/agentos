@@ -211,16 +211,21 @@ class RestController
             return true;
         }
 
-        $anonId = sanitize_text_field($request->get_param('anon_id') ?? '');
         $requestedEmail = sanitize_email($request->get_param('user_email') ?? '');
         $currentUser = wp_get_current_user();
         $currentEmail = ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) ? sanitize_email($currentUser->user_email) : '';
 
-        if ($anonId) {
-            return true;
-        }
-
         if ($currentEmail) {
+            if ($requestedEmail && $requestedEmail !== $currentEmail) {
+                return new WP_Error(
+                    'rest_forbidden',
+                    __('You do not have permission to view transcripts for that user.', 'agentos'),
+                    [
+                        'status' => 403,
+                    ]
+                );
+            }
+
             return true;
         }
 
@@ -841,7 +846,6 @@ class RestController
         $agentId = sanitize_key($request->get_param('agent_id') ?: '');
         $limit = min(100, max(1, intval($request->get_param('limit') ?: 10)));
         $status = sanitize_key($request->get_param('status') ?: '');
-        $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
         $requestedEmail = sanitize_email($request->get_param('user_email') ?: '');
 
         if (!$postId) {
@@ -854,22 +858,23 @@ class RestController
             $filters['status'] = $status;
         }
 
-        if ($anonId) {
-            $filters['anon_id'] = $anonId;
-        }
-
-        if (current_user_can('manage_options')) {
-            if ($requestedEmail) {
+        $currentUser = wp_get_current_user();
+        if ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) {
+            $currentEmail = sanitize_email($currentUser->user_email);
+            if (current_user_can('manage_options') && $requestedEmail) {
                 $filters['user_email'] = $requestedEmail;
+            } else {
+                if ($requestedEmail && $requestedEmail !== $currentEmail) {
+                    return new WP_Error('rest_forbidden', __('Email filter not permitted.', 'agentos'), ['status' => 403]);
+                }
+
+                $filters['user_key'] = 'user_' . (int) $currentUser->ID;
             }
+        } elseif ($requestedEmail) {
+            // Non-admins cannot request arbitrary emails.
+            return new WP_Error('rest_forbidden', __('Email filter not permitted.', 'agentos'), ['status' => 403]);
         } else {
-            $currentUser = wp_get_current_user();
-            if ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) {
-                $filters['user_email'] = sanitize_email($currentUser->user_email);
-            } elseif ($requestedEmail) {
-                // Non-admins cannot request arbitrary emails.
-                return new WP_Error('rest_forbidden', __('Email filter not permitted.', 'agentos'), ['status' => 403]);
-            }
+            return [];
         }
 
         $rows = $this->transcripts->list($postId, $agentId, $limit, $filters);

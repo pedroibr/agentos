@@ -79,6 +79,7 @@ class Shortcode
             'rest' => esc_url_raw(rest_url('agentos/v1')),
             'nonce' => wp_create_nonce('wp_rest'),
             'post_id' => $postId,
+            'viewer_is_authenticated' => is_user_logged_in(),
             'context_params' => $contextParams,
             'logging' => !empty($settings['enable_logging']),
             'show_transcript' => !empty($agent['show_transcript']),
