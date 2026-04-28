@@ -177,11 +177,6 @@
 
     function syncShellHeight() {
       if (!els.shell) return;
-      const width = window.innerWidth || document.documentElement.clientWidth || 0;
-      if (width <= 720) {
-        wrap.style.removeProperty('--agentos-shell-height');
-        return;
-      }
       const viewportHeight = Math.round(
         (window.visualViewport && window.visualViewport.height) ||
         window.innerHeight ||
