@@ -66,6 +66,7 @@
     const nonce = cfg.nonce || '';
     const postId = cfg.post_id || null;
     const agentId = cfg.agent_id || '';
+    const viewerIsAuthenticated = !!cfg.viewer_is_authenticated;
     const contextParams = Array.isArray(cfg.context_params) ? cfg.context_params : [];
     const loggingEnabled = !!cfg.logging;
     const transcriptEnabled = transcriptAttr !== '0' && transcriptAttr !== 'false' && cfg.show_transcript !== false;
@@ -437,7 +438,9 @@
       if (!savedSessions.length) {
         const empty = document.createElement('p');
         empty.className = 'agentos-session-list__empty';
-        empty.textContent = 'Saved sessions will appear here.';
+        empty.textContent = viewerIsAuthenticated
+          ? 'Saved sessions will appear here.'
+          : 'Sign in to view saved sessions.';
         els.sessionList.appendChild(empty);
         return;
       }
@@ -1493,13 +1496,19 @@
 
     async function loadHistory(preferredSessionId = null) {
       if (!els.sessionList || historyState.loading) return;
+      if (!viewerIsAuthenticated) {
+        savedSessions = [];
+        selectedSessionId = null;
+        renderSessionList();
+        return;
+      }
+
       historyState.loading = true;
       try {
         const params = new URLSearchParams({
           post_id: String(postId),
           agent_id: agentId,
-          limit: '20',
-          anon_id: getAnonId()
+          limit: '20'
         });
         const res = await fetch(restBase + '/transcript-db?' + params.toString(), {
           method: 'GET',
