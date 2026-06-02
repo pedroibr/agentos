@@ -1,5 +1,10 @@
 # Updates
 
+## 10.3.3 - 2026-06-02
+
+- Updated Realtime voice session initialization to use the current OpenAI client secrets and WebRTC calls endpoints.
+- Preserved the existing tutor voice, transcription, noise reduction, and turn detection settings while migrating the request payload shape.
+
 ## 10.3.2 - 2026-04-28
 
 - Reworked the mobile session layout to keep the header and footer anchored while the conversation area fills the available height and scrolls independently.

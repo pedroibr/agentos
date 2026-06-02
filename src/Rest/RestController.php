@@ -417,38 +417,49 @@ class RestController
             $turnDetection['silence_duration_ms'] = 700;
         }
 
-        $payload = [
-            'model' => $config['model'],
-            'voice' => $config['voice'],
-            'modalities' => ['audio', 'text'],
-            'instructions' => $instructions,
-            'input_audio_transcription' => [
+        $audioInput = [
+            'transcription' => [
                 'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
             ],
-            'input_audio_noise_reduction' => $noiseReduction === 'off'
+            'noise_reduction' => $noiseReduction === 'off'
                 ? null
                 : ['type' => $noiseReduction],
             'turn_detection' => $turnDetection,
         ];
 
+        $sessionPayload = [
+            'type' => 'realtime',
+            'model' => $config['model'],
+            'instructions' => $instructions,
+            'output_modalities' => ['audio'],
+            'audio' => [
+                'input' => $audioInput,
+                'output' => [
+                    'voice' => $config['voice'],
+                ],
+            ],
+        ];
+
         $speechLanguageHint = sanitize_key($config['speech_language_hint'] ?? '');
         if (in_array($speechLanguageHint, ['en', 'pt'], true)) {
-            $payload['input_audio_transcription']['language'] = $speechLanguageHint;
+            $sessionPayload['audio']['input']['transcription']['language'] = $speechLanguageHint;
         }
 
         $transcriptionHint = sanitize_textarea_field($config['transcription_hint'] ?? '');
         if ($transcriptionHint !== '') {
-            $payload['input_audio_transcription']['prompt'] = $transcriptionHint;
+            $sessionPayload['audio']['input']['transcription']['prompt'] = $transcriptionHint;
         }
 
         $response = wp_remote_post(
-            'https://api.openai.com/v1/realtime/sessions',
+            'https://api.openai.com/v1/realtime/client_secrets',
             [
                 'headers' => [
                     'Authorization' => 'Bearer ' . $apiKey,
                     'Content-Type' => 'application/json',
                 ],
-                'body' => wp_json_encode($payload),
+                'body' => wp_json_encode([
+                    'session' => $sessionPayload,
+                ]),
                 'timeout' => 25,
             ]
         );
@@ -465,14 +476,16 @@ class RestController
             return new WP_Error('openai_http', $body ?: __('Unknown error', 'agentos'), ['status' => $code ?: 500]);
         }
 
-        $clientSecret = $json['client_secret']['value'] ?? null;
+        $clientSecret = $json['value']
+            ?? ($json['client_secret']['value'] ?? null)
+            ?? ($json['session']['client_secret']['value'] ?? null);
         if (!$clientSecret) {
             return new WP_Error('openai_no_secret', __('Ephemeral token missing', 'agentos'), ['status' => 500]);
         }
 
         return [
             'client_secret' => $clientSecret,
-            'id' => $json['id'] ?? null,
+            'id' => $json['session']['id'] ?? ($json['id'] ?? null),
             'model' => $config['model'],
             'voice' => $config['voice'],
             'mode' => $config['mode'],
