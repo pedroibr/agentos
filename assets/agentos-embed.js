@@ -1394,7 +1394,7 @@
         await pc.setLocalDescription(offer);
 
         setStatus('Connecting model…');
-        const sdpResponse = await fetch('https://api.openai.com/v1/realtime?model='+encodeURIComponent(model||'gpt-realtime-mini-2025-10-06'), {
+        const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+client_secret, 'Content-Type':'application/sdp' },
           body: offer.sdp
