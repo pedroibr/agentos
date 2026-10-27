@@ -46,7 +46,12 @@ class AgentRepository
         }
 
         return array_map(function ($agent) {
-            return wp_parse_args($agent, $this->blank());
+            $model = $agent['realtime_model'] ?? ($agent['default_model'] ?? '');
+            $agent = wp_parse_args($agent, $this->blank());
+            $agent['realtime_model'] = Config::resolveRealtimeModel((string) $model);
+            $agent['default_model'] = $agent['realtime_model'];
+
+            return $agent;
         }, $agents);
     }
 
@@ -120,9 +125,7 @@ class AgentRepository
         $agent['slug'] = $slug;
 
         $realtimeModel = sanitize_text_field($input['realtime_model'] ?? ($input['default_model'] ?? Config::FALLBACK_REALTIME_MODEL));
-        if (!$realtimeModel) {
-            $realtimeModel = Config::FALLBACK_REALTIME_MODEL;
-        }
+        $realtimeModel = Config::resolveRealtimeModel($realtimeModel);
         $agent['realtime_model'] = $realtimeModel;
         $agent['default_model'] = $realtimeModel;
 
@@ -210,6 +213,7 @@ class AgentRepository
         $map = $agent['field_maps'][$postType] ?? [];
 
         $model = $this->getFieldValue($postId, $map['model'] ?? '') ?: (($agent['realtime_model'] ?? $agent['default_model'] ?? '') ?: Config::FALLBACK_REALTIME_MODEL);
+        $model = Config::resolveRealtimeModel($model);
         $voice = $this->getFieldValue($postId, $map['voice'] ?? '') ?: ($agent['default_voice'] ?: Config::FALLBACK_VOICE);
 
         $instructions = $this->getFieldValue($postId, $map['system_prompt'] ?? '');

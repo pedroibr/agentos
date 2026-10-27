@@ -960,6 +960,12 @@ class RestController
                 continue;
             }
 
+            // Keep interrupted speech in saved history, but do not replay generated
+            // words as if the listener had heard the entire message.
+            if (!empty($entry['interrupted']) || !empty($entry['partial']) || (array_key_exists('resumeEligible', $entry) && !$entry['resumeEligible'])) {
+                continue;
+            }
+
             $role = sanitize_key($entry['role'] ?? '');
             $text = trim((string) ($entry['text'] ?? ''));
             if ($text === '' || !in_array($role, ['user', 'assistant'], true)) {

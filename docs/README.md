@@ -30,6 +30,23 @@
 
 Context params (from Settings) continue to pass URL values through to the generated instructions, e.g. `?nome=...&produto=...&etapa=...`.
 
+## Voice sessions (10.3.4)
+
+- The default voice model is `gpt-realtime-2.1-mini`. The original `gpt-realtime-mini` alias and `gpt-realtime-mini-2025-10-06` snapshot resolve to this model when agents or mapped post settings are read. Other explicitly selected models are preserved. Text and analysis models remain configured separately.
+- The WordPress server creates an ephemeral client secret; audio travels between the browser and OpenAI over WebRTC. The browser requests acoustic echo cancellation, noise suppression, and automatic gain control. Actual device/browser settings are reported when diagnostic logging is enabled.
+- Voice captions use item-scoped Realtime transcription events, including authoritative final transcripts. Repeated words or phrases are valid input and are not suppressed by comparing them with the assistant's speech.
+- Input remains open during assistant playback for natural interruptions. Cancellation and truncation events must be reflected in the conversation rather than using text similarity as an echo filter. Real acoustic behavior still needs testing on the intended speakers, microphone, and browser.
+- For diagnostics, enable **AgentOS → Settings → Enable console logging** and inspect `[AgentOS]` connection, capture, playback, item, and error events. Client secrets and full transcript payloads must not be logged.
+- Install development test dependencies with `npm ci`, then run `npm test`. These dependencies are not shipped with the WordPress plugin. See `docs/SOPs/test.md` for the physical voice test matrix.
+
+OpenAI references: [WebRTC](https://developers.openai.com/api/docs/guides/voice-webrtc?api=realtime), [Realtime events](https://developers.openai.com/api/reference/resources/realtime/server-events), [GPT-Realtime-2.1 Mini](https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini).
+
+### Interrupted conversation history (10.3.5)
+
+Received assistant text stays visible in its original position when speech is interrupted. Saved transcripts retain the same text with `interrupted: true` and `resumeEligible: false`; unfinished user captions use `partial: true` and `resumeEligible: false`. These flags are displayed as labels, separate from message text, when viewing either current or saved sessions. They also distinguish incomplete turns in post-session analysis.
+
+Resuming voice or building text-response input excludes these unconfirmed entries. This preserves what was displayed without asserting that every generated word was heard. Realtime's audio truncation timestamp does not provide word-aligned captions; the interrupted caption is a snapshot of the text received before interruption, not a precise transcription of speaker playback.
+
 ## Block
 
 - Insert the **AgentOS Agent** block from the block inserter (Widgets category) to embed an agent without memorizing the shortcode.

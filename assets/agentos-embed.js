@@ -73,7 +73,6 @@
     const analysisEnabled = !!cfg.analysis_enabled;
     const requireSubscription = !!cfg.require_subscription;
     const sessionTokenCapDefault = parseInt(cfg.session_token_cap || '0', 10) || 0;
-    const transcriptionHint = String(cfg.transcription_hint || '').trim();
     const { info: logInfo, error: logError, debug: logDebug, warn: logWarn } = createLogger(loggingEnabled);
 
     if (!restBase || !postId || !agentId) {
@@ -140,7 +139,18 @@
     let inputRecorderActive = false;
     let inputRecorderDiscard = false;
     let sessionActive = false;
-    let bootstrapResponsePending = false;
+    let sessionGeneration = 0;
+    const sessionLifecycle = window.AgentOSRealtime && window.AgentOSRealtime.createLifecycle(els.audio);
+    let playbackActive = false;
+    let playbackBlocked = false;
+    let inputSpeechActive = false;
+    let transcriptLedger = null;
+    let saveEnableTimer = 0;
+    const realtimeTranscriptEntries = new Map();
+    const realtimeBubbles = new Map();
+    const realtimeTokenCounts = new Map();
+    const realtimeKeysByTranscriptEntry = new WeakMap();
+    const transcriptBubbles = new WeakMap();
     const transcript = []; // [{role,text}]
     const historyState = {
       loading: false
@@ -400,10 +410,16 @@
       if (Array.isArray(entries)) {
         entries.forEach((entry) => {
           if (!entry || !entry.role) return;
-          addBubble(entry.role, entry.text || '', null, {
+          const bubble = addBubble(entry.role, entry.text || '', null, {
             forceRender: true,
             suppressScroll: true
           });
+          if (bubble) {
+            transcriptBubbles.set(entry, bubble);
+            renderTranscriptBubble(bubble, entry);
+          }
+          const realtimeKey = realtimeKeysByTranscriptEntry.get(entry);
+          if (realtimeKey && bubble) realtimeBubbles.set(realtimeKey, bubble);
         });
       }
       if (scrollMode === 'top') {
@@ -414,6 +430,24 @@
       }
       autoScrollPinned = true;
       scheduleScrollToBottom('renderTranscriptEntries', { force: true, instant });
+    }
+
+    function renderTranscriptBubble(bubble, entry) {
+      if (!bubble || !entry) return;
+      const interrupted = entry.interrupted === true;
+      const incomplete = entry.partial === true;
+      bubble.classList.toggle('is-interrupted', interrupted);
+      bubble.classList.toggle('is-incomplete', incomplete);
+      const label = interrupted ? 'Interrupted: ' : (incomplete ? 'Incomplete: ' : '');
+      bubble.textContent = label + (entry.text || (incomplete ? 'transcription unavailable' : (interrupted ? 'transcript unavailable' : '')));
+    }
+
+    function reorderTranscriptDom() {
+      if (!canRenderTranscript || selectedSessionId || !transcriptTail || transcriptTail.parentNode !== els.log) return;
+      transcript.forEach((entry) => {
+        const bubble = transcriptBubbles.get(entry);
+        if (bubble && bubble.parentNode === els.log) els.log.insertBefore(bubble, transcriptTail);
+      });
     }
 
     function renderSessionList() {
@@ -630,33 +664,25 @@
       }
     }
 
+    function isCurrentSession(generation) {
+      return sessionLifecycle ? sessionLifecycle.isCurrent(generation) : generation === sessionGeneration;
+    }
+
     function teardownRealtimeSession() {
-      bootstrapResponsePending = false;
-      try {
-        if (pc) pc.close();
-      } catch (_) {}
-      try {
-        if (micStream) micStream.getTracks().forEach((track) => track.stop());
-      } catch (_) {}
-      stopUserSTT();
+      if (saveEnableTimer) { clearTimeout(saveEnableTimer); saveEnableTimer = 0; }
+      if (sessionLifecycle) sessionGeneration = sessionLifecycle.dispose();
+      else {
+        sessionGeneration += 1;
+        try { if (dc) dc.close(); } catch (_) {}
+        try { if (pc) pc.close(); } catch (_) {}
+        try { if (micStream) micStream.getTracks().forEach((track) => track.stop()); } catch (_) {}
+        try { if (els.audio) { els.audio.pause(); els.audio.srcObject = null; } } catch (_) {}
+      }
       pc = null;
       dc = null;
       micStream = null;
-    }
-
-    function setMicTracksEnabled(enabled) {
-      if (!micStream) return;
-      try {
-        micStream.getAudioTracks().forEach((track) => {
-          track.enabled = !!enabled;
-        });
-      } catch (_) {}
-    }
-
-    function finalizeBootstrapResponse() {
-      if (!bootstrapResponsePending) return;
-      bootstrapResponsePending = false;
-      setMicTracksEnabled(true);
+      playbackActive = false;
+      inputSpeechActive = false;
     }
 
     function sendRealtimeHistoryMessage(role, text) {
@@ -678,14 +704,20 @@
       }));
     }
 
+    function buildResumeContext() {
+      return transcript
+        .filter((entry) => entry && entry.role && entry.text && entry.interrupted !== true && entry.partial !== true && entry.resumeEligible !== false)
+        .map((entry) => ({ role: entry.role, text: entry.text }));
+    }
+
     function restoreRealtimeConversation(userPrompt) {
       if (!dc || dc.readyState !== 'open') return;
-      const transcriptHasHistory = Array.isArray(transcript) && transcript.length > 0;
-      transcript.forEach((entry) => {
+      const contextEntries = buildResumeContext();
+      contextEntries.forEach((entry) => {
         if (!entry || !entry.role || !entry.text) return;
         sendRealtimeHistoryMessage(entry.role, entry.text);
       });
-      if (!transcriptHasHistory && userPrompt) {
+      if (!transcript.length && userPrompt) {
         sendRealtimeHistoryMessage('user', 'User Prompt:\n' + userPrompt);
         dc.send(JSON.stringify({ type:'response.create' }));
       }
@@ -693,13 +725,12 @@
 
     function resetCurrentSession(options = {}) {
       teardownRealtimeSession();
+      if (transcriptLedger) transcriptLedger.clear();
+      realtimeTranscriptEntries.clear();
+      realtimeBubbles.clear();
+      realtimeTokenCounts.clear();
       cleanupInputRecorder(true);
       transcript.length = 0;
-      assistantBuffer = '';
-      currentAssistantBubble = null;
-      userBuffer = '';
-      currentUserBubble = null;
-      lastAssistantText = '';
       SESSION_ID = null;
       activeModel = '';
       activeVoice = '';
@@ -753,18 +784,27 @@
         return;
       }
       const normalized = t.toLowerCase();
-      if (normalized.includes('record')) {
+      if (normalized.includes('error') || normalized.includes('connection ended') || normalized.includes('connection closed') || normalized.includes('not ready') || normalized.includes('blocked') || normalized.includes('could not be confirmed')) {
+        els.status.dataset.status = 'error';
+        setSessionState('error');
+      } else if (normalized.includes('speaking')) {
+        els.status.dataset.status = 'speaking';
+        setSessionState('speaking');
+      } else if (normalized.includes('listening')) {
+        els.status.dataset.status = 'listening';
+        setSessionState('listening');
+      } else if (normalized.includes('record')) {
         els.status.dataset.status = 'recording';
         setSessionState('recording');
-      } else if (normalized.includes('connect')) {
+      } else if (normalized === 'connected') {
         els.status.dataset.status = 'connected';
         setSessionState('connected');
-      } else if (normalized.includes('request') || normalized.includes('creating')) {
-        delete els.status.dataset.status;
+      } else if (normalized.includes('request') || normalized.includes('creating') || normalized.includes('connecting')) {
+        els.status.dataset.status = 'connecting';
         setSessionState('connecting');
       } else {
         delete els.status.dataset.status;
-        setSessionState('idle');
+        setSessionState(sessionActive ? 'running' : 'idle');
       }
       if (!selectedSessionId && els.transcriptStatus) {
         els.transcriptStatus.textContent = t || 'Ready';
@@ -936,181 +976,129 @@
       return div;
     }
 
-    // Assistant streaming
-    let assistantBuffer = '';
-    let currentAssistantBubble = null;
-    let assistantIdleTimer = null;
-    let lastAssistantBubble = null;
-    let lastAssistantAt = 0;
-    function updateAssistant(delta){
-      if (!canRenderTranscript) {
-        assistantBuffer += delta;
-        clearTimeout(assistantIdleTimer);
-        assistantIdleTimer = setTimeout(commitAssistant, 1200);
-        return;
+    // Realtime text and interruption metadata stay in the canonical transcript; resume context is projected separately.
+    function renderRealtimeEntry(entry, meta) {
+      if (!entry || !entry.key || !entry.role) return;
+      let saved = realtimeTranscriptEntries.get(entry.key);
+      if (!saved) {
+        saved = {
+          role: entry.role,
+          text: entry.text || '',
+          itemId: entry.itemId || '',
+          responseId: entry.responseId || '',
+          previousItemId: entry.previousItemId || '',
+          interrupted: false,
+          partial: false,
+          resumeEligible: true
+        };
+        realtimeTranscriptEntries.set(entry.key, saved);
+        realtimeKeysByTranscriptEntry.set(saved, entry.key);
+        transcript.push(saved);
       }
-      if (!currentAssistantBubble) {
-        currentAssistantBubble = addBubble('assistant','');
-        lastAssistantBubble = currentAssistantBubble;
-        lastAssistantAt = Date.now();
-      }
-      assistantBuffer += delta;
-      if (currentAssistantBubble) {
-        currentAssistantBubble.innerHTML += escapeHtml(delta);
-        scheduleScrollToBottom('assistantDelta', { streaming: true });
-      }
-      clearTimeout(assistantIdleTimer);
-      assistantIdleTimer = setTimeout(commitAssistant, 1200);
-    }
-    function commitAssistant(){
-      const trimmed = assistantBuffer.trim();
-      if (trimmed){
-        const tokenKind = (mode === 'text') ? 'text' : 'realtime';
-        recordTokens(tokenKind, trimmed);
-        transcript.push({ role:'assistant', text: trimmed });
-        lastAssistantText = trimmed;
-      }
-      scheduleScrollToBottom('assistantCommit');
-      assistantBuffer = ''; currentAssistantBubble = null;
-    }
 
-    // User streaming (realtime transcription)
-    let userBuffer = '';
-    let currentUserBubble = null;
-    let userIdleTimer = null;
-    let useRealtimeUserTranscript = false;
-    let userTranscriptionState = { itemId: '', hasDelta: false };
-    let lastAssistantText = '';
-    function normalizeText(input){
-      return String(input || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    }
-    function looksLikeTranscriptionHintLeak(text){
-      const clean = normalizeText(text);
-      const hintClean = normalizeText(transcriptionHint);
-      if (!clean || !hintClean || hintClean.length < 12) return false;
-      if (clean === hintClean) return true;
-      if (clean.startsWith(hintClean) || clean.endsWith(hintClean)) {
-        return Math.abs(clean.length - hintClean.length) <= 12;
+      const alreadyFrozen = saved.interrupted === true || saved.partial === true || saved.resumeEligible === false;
+      if (!alreadyFrozen || (saved.partial === true && entry.final)) {
+        saved.text = typeof entry.text === 'string' ? entry.text : saved.text;
       }
-      return false;
-    }
-    function shouldIgnoreUserText(text){
-      const clean = normalizeText(text);
-      if (!clean || clean.length < 6) return false;
-      if (looksLikeTranscriptionHintLeak(text)) {
-        return true;
-      }
-      const assistantClean = normalizeText(lastAssistantText);
-      if (!assistantClean) return false;
-      return assistantClean.includes(clean) || clean.includes(assistantClean);
-    }
-    function updateUserFromRealtime(delta){
-      if (!delta) return;
-      if (!canRenderTranscript) {
-        userBuffer += delta;
-        clearTimeout(userIdleTimer);
-        userIdleTimer = setTimeout(commitUserFromRealtime, 1200);
-        return;
-      }
-      if (!currentUserBubble) {
-        let beforeEl = null;
-        const recentAssistant = lastAssistantBubble && (Date.now() - lastAssistantAt) < 8000;
-        if (currentAssistantBubble) {
-          beforeEl = currentAssistantBubble;
-        } else if (recentAssistant) {
-          beforeEl = lastAssistantBubble;
-        }
-        currentUserBubble = addBubble('user','', beforeEl);
-      }
-      userBuffer += delta;
-      if (currentUserBubble) {
-        currentUserBubble.innerHTML += escapeHtml(delta);
-        scheduleScrollToBottom('userRealtimeDelta', { streaming: true });
-      }
-      clearTimeout(userIdleTimer);
-      userIdleTimer = setTimeout(commitUserFromRealtime, 1200);
-    }
-    function commitUserFromRealtime(){
-      const trimmed = userBuffer.trim();
-      if (trimmed){
-        if (shouldIgnoreUserText(trimmed)) {
-          if (currentUserBubble && currentUserBubble.parentNode) {
-            currentUserBubble.parentNode.removeChild(currentUserBubble);
-          }
-        } else {
-          recordTokens('realtime', trimmed);
-          transcript.push({ role:'user', text: trimmed });
-        }
-      }
-      scheduleScrollToBottom('userCommit');
-      userBuffer = ''; currentUserBubble = null;
-    }
+      saved.role = entry.role;
+      saved.itemId = entry.itemId || saved.itemId;
+      saved.responseId = entry.responseId || saved.responseId;
+      saved.previousItemId = entry.previousItemId || saved.previousItemId;
+      if (entry.interrupted === true) saved.interrupted = true;
+      if (entry.partial === true) saved.partial = true;
+      if (entry.resumeEligible === false || saved.interrupted || saved.partial) saved.resumeEligible = false;
 
-    function handleRealtimeEvent(ev){
-      if (!ev || !ev.type) return;
-      if (ev.type !== 'response.output_text.delta') {
-        logDebug('Realtime event', { type: ev.type });
+      if (entry.final) {
+        const tokenCount = estimateTokens(saved.text);
+        const previousTokenCount = realtimeTokenCounts.get(entry.key) || 0;
+        sessionStats.tokensRealtime += tokenCount - previousTokenCount;
+        sessionStats.tokensTotal += tokenCount - previousTokenCount;
+        realtimeTokenCounts.set(entry.key, tokenCount);
       }
-      if (useRealtimeUserTranscript && String(ev.type).includes('input_audio_transcription')) {
-        const itemId = ev.item_id || (ev.item && ev.item.id) || ev.id || '';
-        if (itemId && itemId !== userTranscriptionState.itemId) {
-          if (userBuffer) commitUserFromRealtime();
-          userTranscriptionState = { itemId, hasDelta: false };
-        }
-        const delta = ev.delta || '';
-        const finalText = ev.text || ev.transcript || '';
-        if (delta) {
-          userTranscriptionState.hasDelta = true;
-          updateUserFromRealtime(delta);
-        } else if (finalText) {
-          if (!userTranscriptionState.hasDelta && !userBuffer && !currentUserBubble) {
-            updateUserFromRealtime(finalText);
+
+      const knownEntries = new Set(realtimeTranscriptEntries.values());
+      const realtimePositions = [];
+      transcript.forEach((item, index) => { if (knownEntries.has(item)) realtimePositions.push(index); });
+      const orderedSaved = (meta.ordered || []).map((item) => realtimeTranscriptEntries.get(item.key)).filter(Boolean);
+      realtimePositions.forEach((index, offset) => { if (orderedSaved[offset]) transcript[index] = orderedSaved[offset]; });
+
+      if (canRenderTranscript && !selectedSessionId) {
+        let bubble = realtimeBubbles.get(entry.key);
+        if (!bubble || !bubble.parentNode) {
+          bubble = addBubble(entry.role, '', null);
+          if (bubble) {
+            realtimeBubbles.set(entry.key, bubble);
+            transcriptBubbles.set(saved, bubble);
           }
         }
-        if (String(ev.type).includes('completed') || String(ev.type).includes('done')) {
-          commitUserFromRealtime();
+        if (bubble) renderTranscriptBubble(bubble, saved);
+        reorderTranscriptDom();
+        scheduleScrollToBottom('realtimeTranscript', { streaming: !entry.final && !saved.interrupted && !saved.partial });
+      }
+      if (entry.final || saved.interrupted || saved.partial) {
+        if (els.save) els.save.disabled = transcript.length === 0;
+        renderSessionList();
+      }
+    }
+    transcriptLedger = window.AgentOSRealtime && window.AgentOSRealtime.createLedger(renderRealtimeEntry);
+
+    function handleRealtimeEvent(ev, generation) {
+      if (!ev || !ev.type || !isCurrentSession(generation)) return;
+      if (ev.type === 'error') {
+        logError('Realtime event error', { code: ev.error && ev.error.code || '', type: ev.error && ev.error.type || '' });
+      } else {
+        logDebug('Realtime event', { type: ev.type, responseId: ev.response_id || (ev.response && ev.response.id) || '', itemId: ev.item_id || '' });
+      }
+      const result = transcriptLedger ? transcriptLedger.handle(ev) : { kind: 'ignored' };
+      if (result.kind === 'error') {
+        setStatus('Voice service error' + (result.code ? ' (' + result.code + ')' : '') + '. Try again or resume the session.');
+      } else if (result.kind === 'response-done') {
+        if (!result.duplicate) {
+          if (!playbackActive && sessionActive) setStatus('Listening…');
+          if (result.status === 'cancelled' && transcriptLedger) transcriptLedger.discardResponse(result.responseId);
+          if (result.status === 'cancelled' || result.status === 'failed' || result.status === 'incomplete') {
+            logInfo('Realtime response ended early', { status: result.status, responseId: result.responseId });
+            if (result.status === 'failed' || result.status === 'incomplete') {
+              setStatus('Voice response error. Please try again.');
+            }
+          }
         }
-        return;
-      }
-      if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
-        if (userBuffer) commitUserFromRealtime();
-        updateAssistant(ev.delta); return;
-      }
-      if (ev.type === 'response.output_text.done' || ev.type === 'response.completed') {
-        commitAssistant();
-        return;
-      }
-      if (ev.type === 'response.output_audio.done') {
-        finalizeBootstrapResponse();
-        return;
-      }
-      if (ev.type === 'response.output_item.done') {
-        if (ev.item && ev.item.role === 'assistant' && ev.item.status === 'completed') {
-          finalizeBootstrapResponse();
-        }
-        return;
-      }
-      if (ev.type === 'response.created') {
-        if (userBuffer) commitUserFromRealtime();
-        return;
-      }
-      if (ev.type === 'response.message' && Array.isArray(ev.content)) {
-        if (assistantBuffer || currentAssistantBubble) {
-          return;
-        }
-        const text = ev.content.filter(p => p.type === 'output_text' && typeof p.text === 'string').map(p => p.text).join('');
-        if (text && normalizeText(text) !== normalizeText(lastAssistantText)) {
-          updateAssistant(text);
-          commitAssistant();
-        }
-        return;
-      }
-      if (ev.type && String(ev.type).startsWith('response.') && typeof ev.delta === 'string' && ev.delta) {
-        updateAssistant(ev.delta); return;
+      } else if (result.kind === 'playback-started') {
+        playbackActive = true;
+        setStatus('Speaking…');
+      } else if (result.kind === 'playback-stopped' || result.kind === 'playback-cleared') {
+        playbackActive = false;
+        if (sessionActive) setStatus('Listening…');
+      } else if (result.kind === 'speech-started') {
+        // WebRTC server VAD handles barge-in; keep the capture track live for AEC/full duplex.
+        inputSpeechActive = true;
+        logDebug('Input speech started');
+        if (sessionActive) setStatus('Listening…');
+      } else if (result.kind === 'speech-stopped') {
+        inputSpeechActive = false;
+        logDebug('Input speech stopped');
+      } else if (result.kind === 'item-truncated') {
+        logInfo('Realtime audio item truncated by server', { itemId: result.itemId, audioEndMs: result.audioEndMs });
       }
     }
 
-    async function getToken() {
+    function handleRealtimeDisconnect(reason, generation) {
+      if (!isCurrentSession(generation)) return;
+      const hadOpenSpeech = inputSpeechActive;
+      logWarn('Realtime connection ended', { reason });
+      if (transcriptLedger) { transcriptLedger.markPendingInterrupted(); transcriptLedger.discardUnplayedResponses(); }
+      sendUsageUpdate('paused', reason);
+      teardownRealtimeSession();
+      setSessionState('error');
+      sessionActive = false;
+      if (els.stop) els.stop.disabled = true;
+      if (els.start) els.start.disabled = false;
+      setStartButtonLabel('Resume voice');
+      setStatus(hadOpenSpeech ? 'Connection ended while you were speaking. The incomplete utterance is retained and excluded from resume context.' : 'Connection ended. You can resume this session.');
+      activateCurrentSessionView();
+    }
+
+    async function getToken(generation) {
       const anonId = getAnonId();
       const res = await fetch(restBase + '/realtime-token', {
         method: 'POST',
@@ -1133,16 +1121,17 @@
             const parsed = JSON.parse(raw);
             parsedMessage = parsed?.message || '';
             parsedCode = parsed?.code || '';
-            raw = parsed;
+            raw = '';
           } catch (_) {}
         } catch (_) {}
-        logError('Token request failed', res.status, raw);
+        logError('Token request failed', { status: res.status, code: parsedCode || 'request_error' });
         const detail = parsedMessage || `Token request failed (${res.status})`;
         const codeHint = parsedCode ? ` (${parsedCode})` : '';
         throw new Error(detail + codeHint);
       }
       const json = await res.json();
-      logDebug('Token payload', json);
+      if (!isCurrentSession(generation)) return null;
+      logDebug('Realtime token response received', { hasClientSecret: !!json.client_secret, model: json.model || '', voice: json.voice || '' });
       activeSubscription = json.subscription || '';
       activeSessionCap = json.session_cap || sessionTokenCapDefault;
       activeContext = json.context && typeof json.context === 'object' ? json.context : {};
@@ -1155,86 +1144,61 @@
       return json;
     }
 
-    function waitForOpen(channel, timeoutMs = 7000) {
+    function waitForOpen(channel, generation, timeoutMs = 7000) {
       return new Promise((resolve, reject) => {
         if (channel.readyState === 'open') return resolve();
-        const t = setTimeout(()=>reject(new Error('DataChannel timeout')), timeoutMs);
-        channel.onopen = ()=>{ clearTimeout(t); resolve(); };
-        channel.onclose = ()=>{ clearTimeout(t); reject(new Error('DataChannel closed')); };
+        let timer = 0;
+        const cleanup = () => {
+          if (timer) { clearTimeout(timer); if (sessionLifecycle) sessionLifecycle.removeTimer(timer); }
+          channel.removeEventListener('open', onOpen);
+          channel.removeEventListener('close', onClose);
+        };
+        const onOpen = () => { cleanup(); resolve(); };
+        const onClose = () => { cleanup(); reject(new Error('DataChannel closed')); };
+        channel.addEventListener('open', onOpen, { once: true });
+        channel.addEventListener('close', onClose, { once: true });
+        timer = setTimeout(() => { cleanup(); reject(new Error('DataChannel timeout')); }, timeoutMs);
+        if (sessionLifecycle) sessionLifecycle.addTimer(generation, timer);
       });
     }
 
-    // (A) VOICE path (WebRTC + optional client STT)
-    let recog = null, recogActive = false;
-    function startUserSTT(){
-      if (mode === 'text') return; // no mic mode
-      if (useRealtimeUserTranscript) {
-        logInfo('Browser STT disabled; using realtime transcription for user bubbles');
-        return;
-      }
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) {
-        logWarn('SpeechRecognition unavailable; user bubbles depend on browser STT support');
-        return;
-      }
-      recog = new SR(); recog.lang = 'en-US'; recog.continuous = true; recog.interimResults = true;
-      let bubble = null, finalText = '';
-      recog.onresult = (e) => {
-        if (useRealtimeUserTranscript) return;
-        let interim = '';
-        for (let i=e.resultIndex; i<e.results.length; i++){
-          const r = e.results[i];
-          if (r.isFinal) finalText += r[0].transcript;
-          else interim += r[0].transcript;
-        }
-        if (!bubble && canRenderTranscript) bubble = addBubble('user','');
-        if (bubble) {
-          bubble.innerHTML = escapeHtml((finalText + interim).trim());
-          scheduleScrollToBottom('browserStt', { streaming: true });
-        }
-        if (finalText.trim()){
-          const trimmed = finalText.trim();
-          logDebug('STT final', { text: trimmed });
-          recordTokens('realtime', trimmed);
-          transcript.push({ role:'user', text: trimmed });
-          finalText = ''; bubble = null;
-        }
-      };
-      recog.onerror = (e) => { logWarn('SpeechRecognition error', e); };
-      recog.onend = () => {
-        logDebug('SpeechRecognition ended');
-        if (recogActive) try{recog.start();}catch(_){} };
-      try{ recog.start(); recogActive = true; }catch(_){}
-    }
-    function stopUserSTT(){ try{ recogActive=false; if (recog) recog.stop(); }catch(_){} }
+    // Realtime ASR events are the single source for voice transcript bubbles.
 
     async function sendTextMessage(txt) {
-      const msg = (txt||'').trim();
-      if (!msg) return;
-      if (mode === 'text') {
-        await sendTextMessageViaResponses(msg);
-        return;
+      const msg = (txt || '').trim();
+      if (!msg) return false;
+      if (mode === 'text') return await sendTextMessageViaResponses(msg);
+      const channel = dc;
+      if (!channel || channel.readyState !== 'open') {
+        setStatus('Voice connection is not ready. Reconnect before sending.');
+        logWarn('Hybrid text send blocked because data channel is closed');
+        return false;
+      }
+      try {
+        channel.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: msg }] }
+        }));
+        channel.send(JSON.stringify({ type: 'response.create' }));
+      } catch (_) {
+        setStatus('Voice connection closed before the message was sent. Reconnect and try again.');
+        logWarn('Hybrid text send failed because the data channel closed');
+        return false;
       }
       recordTokens('text', msg);
       logDebug('Text message sent', { length: msg.length });
+      const sentEntry = { role: 'user', text: msg };
+      transcript.push(sentEntry);
       if (canRenderTranscript) {
-        addBubble('user', msg);
+        const bubble = addBubble('user', msg);
+        if (bubble) transcriptBubbles.set(sentEntry, bubble);
       }
-      transcript.push({ role:'user', text: msg });
       if (els.save) els.save.disabled = transcript.length === 0;
-      if (dc && dc.readyState === 'open') {
-        dc.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: { type:'message', role:'user', content:[{ type:'input_text', text: msg }] }
-        }));
-        dc.send(JSON.stringify({ type: 'response.create' }));
-      } else {
-        logWarn('DataChannel not open; text message not sent to realtime API');
-      }
+      return true;
     }
 
     async function sendTextMessageViaResponses(msg) {
-      if (textRequestInFlight) return;
+      if (textRequestInFlight) return false;
       if (selectedSessionId) {
         activateCurrentSessionView();
       }
@@ -1249,10 +1213,12 @@
       activeVoice = '';
       setSessionState('running');
       activateCurrentSessionView();
+      const sentEntry = { role: 'user', text: msg };
+      transcript.push(sentEntry);
       if (canRenderTranscript) {
-        addBubble('user', msg);
+        const bubble = addBubble('user', msg);
+        if (bubble) transcriptBubbles.set(sentEntry, bubble);
       }
-      transcript.push({ role:'user', text: msg });
       if (els.save) els.save.disabled = transcript.length === 0;
       renderSessionList();
       closeSidebarIfCompact();
@@ -1261,6 +1227,7 @@
       if (els.textInput) els.textInput.disabled = true;
       setStatus('Thinking…');
 
+      let responseSucceeded = false;
       try {
         const res = await fetch(restBase + '/text-response', {
           method: 'POST',
@@ -1272,7 +1239,7 @@
             anon_id: getAnonId(),
             ctx: getCtxFromURL(contextParams),
             message: msg,
-            transcript,
+            transcript: buildResumeContext(),
             tokens_text: sessionStats.tokensText,
             tokens_total: sessionStats.tokensTotal,
             duration_seconds: currentDurationSeconds()
@@ -1300,15 +1267,17 @@
 
         const assistantText = String(data.text || '').trim();
         if (assistantText) {
+          const assistantEntry = { role: 'assistant', text: assistantText };
+          transcript.push(assistantEntry);
           if (canRenderTranscript) {
-            addBubble('assistant', assistantText);
+            const bubble = addBubble('assistant', assistantText);
+            if (bubble) transcriptBubbles.set(assistantEntry, bubble);
           }
-          transcript.push({ role:'assistant', text: assistantText });
-          lastAssistantText = assistantText;
           scheduleScrollToBottom('textResponse', { force: true });
         }
 
         setStatus('Ready');
+        responseSucceeded = true;
         if (els.save) els.save.disabled = transcript.length === 0;
         renderSessionList();
       } catch (err) {
@@ -1320,12 +1289,13 @@
         if (els.textInput) els.textInput.disabled = false;
         if (els.textInput) els.textInput.focus();
       }
+      return responseSucceeded;
     }
 
     els.textSend?.addEventListener('click', async () => {
       if (!els.textInput) return;
-      await sendTextMessage(els.textInput.value);
-      els.textInput.value = '';
+      const sent = await sendTextMessage(els.textInput.value);
+      if (sent && els.textInput) els.textInput.value = '';
     });
 
     els.textRecord?.addEventListener('click', async () => {
@@ -1335,7 +1305,10 @@
     // main connect
     els.start.addEventListener('click', async () => {
       const isResumeAttempt = !!SESSION_ID;
+      const generation = sessionLifecycle ? sessionLifecycle.begin() : sessionGeneration + 1;
+      sessionGeneration = generation;
       try {
+        if (mode !== 'text' && (!sessionLifecycle || !transcriptLedger)) throw new Error('Voice support failed to load. Reload the page and try again.');
         logInfo('Start clicked', { agentId, postId, mode });
         els.start.disabled = true; if (els.save) els.save.disabled = true;
         activeModel = ''; activeVoice = '';
@@ -1351,47 +1324,68 @@
 
         // Microphone only if voice|both
         if (mode !== 'text') {
-          useRealtimeUserTranscript = true;
           setStatus('Requesting mic…');
-          micStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true
-            }
-          });
-          startUserSTT();
+          const requestedAudio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+          const acquiredStream = await navigator.mediaDevices.getUserMedia({ audio: requestedAudio });
+          if (sessionLifecycle && !sessionLifecycle.setStream(generation, acquiredStream)) return;
+          if (!isCurrentSession(generation)) { acquiredStream.getTracks().forEach((track) => track.stop()); return; }
+          micStream = acquiredStream;
+          const track = acquiredStream.getAudioTracks()[0];
+          let settings = {};
+          try { settings = track && track.getSettings ? track.getSettings() : {}; } catch (_) {}
+          logInfo('Microphone acquired', { requested: requestedAudio, supported: navigator.mediaDevices.getSupportedConstraints ? navigator.mediaDevices.getSupportedConstraints() : {}, settings: { echoCancellation: settings.echoCancellation, noiseSuppression: settings.noiseSuppression, autoGainControl: settings.autoGainControl, sampleRate: settings.sampleRate, channelCount: settings.channelCount } });
         }
 
         setStatus('Creating session…');
-        const tk = await getToken();
+        const tk = await getToken(generation);
+        if (!isCurrentSession(generation) || !tk) return;
         const { client_secret, model, voice, user_prompt } = tk;
         if (!client_secret) throw new Error('Missing ephemeral token');
         activeModel = model || '';
         activeVoice = voice || '';
         window._agentosModel = activeModel;
         window._agentosVoice = activeVoice;
-        bootstrapResponsePending = !isResumeAttempt && transcript.length === 0 && !!String(user_prompt || '').trim();
-        if (bootstrapResponsePending) {
-          setMicTracksEnabled(false);
-        } else {
-          setMicTracksEnabled(true);
-        }
-
         // WebRTC peer
-        pc = new RTCPeerConnection();
-        pc.ontrack = (e) => { els.audio.srcObject = e.streams[0]; };
-        if (mode !== 'text') micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
-        pc.onconnectionstatechange = () => logInfo('Peer connection state', pc.connectionState);
-        pc.oniceconnectionstatechange = () => logDebug('ICE connection state', pc.iceConnectionState);
+        const peer = new RTCPeerConnection();
+        pc = peer;
+        if (sessionLifecycle) sessionLifecycle.setPeer(generation, peer);
+        peer.ontrack = (e) => {
+          if (!isCurrentSession(generation) || !els.audio) return;
+          els.audio.srcObject = e.streams[0];
+          els.audio.onplaying = () => {
+            if (!isCurrentSession(generation)) return;
+            playbackBlocked = false;
+            if (sessionActive) setStatus('Listening…');
+          };
+          els.audio.play?.().catch(() => {
+            if (!isCurrentSession(generation)) return;
+            playbackBlocked = true;
+            els.audio.controls = true;
+            setStatus('Audio playback was blocked. Use the audio controls to listen.');
+            logWarn('Audio autoplay blocked by browser');
+          });
+        };
+        if (mode !== 'text') micStream.getTracks().forEach(t => peer.addTrack(t, micStream));
+        peer.onconnectionstatechange = () => {
+          if (!isCurrentSession(generation)) return;
+          logInfo('Peer connection state', peer.connectionState);
+          if (peer.connectionState === 'failed' || peer.connectionState === 'closed') handleRealtimeDisconnect('peer_' + peer.connectionState, generation);
+        };
+        peer.oniceconnectionstatechange = () => { if (isCurrentSession(generation)) logDebug('ICE connection state', peer.iceConnectionState); };
+        peer.onerror = () => handleRealtimeDisconnect('peer_error', generation);
 
-        dc = pc.createDataChannel('oai-events');
-        dc.onmessage = (e) => { try{ handleRealtimeEvent(JSON.parse(e.data)); }catch(err){ logError('Failed to parse realtime event', err); } };
-        dc.onopen = () => logInfo('Data channel open');
-        dc.onclose = () => logInfo('Data channel closed');
+        const channel = peer.createDataChannel('oai-events');
+        dc = channel;
+        if (sessionLifecycle) sessionLifecycle.setChannel(generation, channel);
+        channel.onmessage = (e) => { if (!isCurrentSession(generation)) return; try{ handleRealtimeEvent(JSON.parse(e.data), generation); }catch(err){ logError('Failed to parse realtime event', { name: err.name }); } };
+        channel.onopen = () => { if (isCurrentSession(generation)) logInfo('Data channel open'); };
+        channel.onclose = () => handleRealtimeDisconnect('data_channel_closed', generation);
+        channel.onerror = () => handleRealtimeDisconnect('data_channel_error', generation);
 
-        const offer = await pc.createOffer({ offerToReceiveAudio: (mode!=='text')?1:0, offerToReceiveVideo: 0 });
-        await pc.setLocalDescription(offer);
+        const offer = await peer.createOffer({ offerToReceiveAudio: (mode!=='text')?1:0, offerToReceiveVideo: 0 });
+        if (!isCurrentSession(generation)) return;
+        await peer.setLocalDescription(offer);
+        if (!isCurrentSession(generation)) return;
 
         setStatus('Connecting model…');
         const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
@@ -1400,9 +1394,13 @@
           body: offer.sdp
         });
         if (!sdpResponse.ok) throw new Error('Realtime handshake failed');
+        if (!isCurrentSession(generation)) return;
         const answerSdp = await sdpResponse.text();
-        await pc.setRemoteDescription({ type:'answer', sdp: answerSdp });
-        await waitForOpen(dc);
+        if (!isCurrentSession(generation)) return;
+        await peer.setRemoteDescription({ type:'answer', sdp: answerSdp });
+        if (!isCurrentSession(generation)) return;
+        await waitForOpen(channel, generation);
+        if (!isCurrentSession(generation)) return;
 
         setStatus('Connected');
 
@@ -1412,18 +1410,29 @@
         setStartButtonLabel(startButtonDefaultLabel || 'Start voice');
         // Enable save after some content arrives
         if (els.save) {
-          setTimeout(()=>{ els.save.disabled = false; }, 1500);
+          saveEnableTimer = setTimeout(() => {
+            saveEnableTimer = 0;
+            if (isCurrentSession(generation)) els.save.disabled = transcript.length === 0;
+          }, 1500);
+          if (sessionLifecycle) sessionLifecycle.addTimer(generation, saveEnableTimer);
         }
         logInfo('Session ready', { model: activeModel, voice: activeVoice });
         sessionActive = true;
+        setSessionState('running');
+        setStatus(playbackBlocked ? 'Audio playback was blocked. Use the audio controls to listen.' : 'Listening…');
         activateCurrentSessionView();
         sendUsageUpdate('running', isResumeAttempt ? 'resumed' : 'started');
 
       } catch (e) {
-        logError('Start failed', e);
-        setStatus('Error: '+e.message);
+        if (!isCurrentSession(generation)) return;
+        const errorName = e && e.name ? e.name : 'Error';
+        const errorMessage = errorName === 'NotAllowedError' ? 'Microphone permission was denied' : (errorName === 'NotFoundError' ? 'No microphone was found' : (errorName === 'NotReadableError' ? 'Microphone is unavailable' : (e && e.message ? e.message : 'Connection failed')));
+        logError('Start failed', { name: errorName, message: errorMessage, code: e && e.code || '' });
+        setStatus('Error: '+errorMessage);
+        setSessionState('error');
+        if (els.stop) els.stop.disabled = true;
         els.start.disabled = false;
-        stopUserSTT();
+        teardownRealtimeSession();
         sendUsageUpdate('pending', 'error');
         if (!isResumeAttempt) {
           SESSION_ID = null;
@@ -1434,28 +1443,37 @@
     });
 
     els.stop.addEventListener('click', () => {
-      try {
-        if (userBuffer) commitUserFromRealtime();
-        if (assistantBuffer) commitAssistant();
-        if (pc) pc.close();
-        if (micStream) micStream.getTracks().forEach(t => t.stop());
-      } finally {
-        teardownRealtimeSession();
-        els.stop.disabled = true;
-        els.start.disabled = false;
-        setStartButtonLabel('Resume voice');
-        if (els.save) els.save.disabled = transcript.length === 0;
-        setStatus('Paused');
-        sessionActive = false;
-        activateCurrentSessionView();
-        sendUsageUpdate('paused', 'stopped');
-      }
+      const hadOpenSpeech = inputSpeechActive;
+      const pendingPartials = transcriptLedger ? transcriptLedger.markPendingInterrupted() : 0;
+      const unplayedResponses = transcriptLedger ? transcriptLedger.discardUnplayedResponses() : 0;
+      teardownRealtimeSession();
+      els.stop.disabled = true;
+      els.start.disabled = false;
+      setStartButtonLabel('Resume voice');
+      if (els.save) els.save.disabled = transcript.length === 0;
+      setStatus(pendingPartials || unplayedResponses || hadOpenSpeech ? 'Paused. Interrupted and incomplete text is retained and excluded from resume context.' : 'Paused');
+      setSessionState('idle');
+      sessionActive = false;
+      activateCurrentSessionView();
+      sendUsageUpdate('paused', 'stopped');
     });
 
     els.save?.addEventListener('click', async () => {
+      let savingGeneration = null;
       try {
-        // commit assistant buffer
-        if (typeof commitAssistant === 'function') commitAssistant();
+        if (textRequestInFlight) { setStatus('Wait for the current response before saving.'); return; }
+        const hadOpenSpeech = inputSpeechActive;
+        const pendingPartials = transcriptLedger ? transcriptLedger.markPendingInterrupted() : 0;
+        const unplayedResponses = transcriptLedger ? transcriptLedger.discardUnplayedResponses() : 0;
+        if (sessionActive) sendUsageUpdate('paused', 'saving');
+        teardownRealtimeSession();
+        savingGeneration = sessionGeneration;
+        sessionActive = false;
+        setSessionState('idle');
+        if (els.stop) els.stop.disabled = true;
+        if (els.start) els.start.disabled = false;
+        setStatus('Saving transcript…');
+        if (els.save) els.save.disabled = true;
         const payload = {
           post_id: postId,
           agent_id: agentId,
@@ -1466,7 +1484,10 @@
           subscription_slug: activeSubscription || '',
           context: activeContext || {},
           user_agent: navigator.userAgent,
-          transcript,
+          transcript: transcript.map((entry) => ({
+            role: entry.role, text: entry.text, itemId: entry.itemId || '', responseId: entry.responseId || '', previousItemId: entry.previousItemId || '',
+            interrupted: entry.interrupted === true, partial: entry.partial === true, resumeEligible: entry.resumeEligible !== false
+          })),
           tokens_realtime: sessionStats.tokensRealtime,
           tokens_text: sessionStats.tokensText,
           tokens_total: sessionStats.tokensTotal,
@@ -1478,14 +1499,19 @@
           body: JSON.stringify(payload)
         });
         const data = await res.json();
+        if (!isCurrentSession(savingGeneration)) return;
         if (!res.ok) throw new Error(data?.message || 'Save failed');
-        setStatus('Transcript saved (id '+data.id+')');
+        setStatus('Transcript saved (id '+data.id+').');
         await sendUsageUpdate('final', 'saved', true);
+        if (!isCurrentSession(savingGeneration)) return;
         resetCurrentSession({ status: 'Ready', activateView: false });
         await loadHistory(String(data.id));
+        if (pendingPartials || unplayedResponses || hadOpenSpeech) setStatus('Transcript saved with interrupted text retained; it is excluded from resume context.');
       } catch (e) {
+        if (savingGeneration !== null && !isCurrentSession(savingGeneration)) return;
         logError('Save failed', e);
         setStatus('Save error: ' + (e && e.message ? e.message : ''));
+        if (els.save) els.save.disabled = transcript.length === 0;
       }
     });
 
@@ -1563,8 +1589,8 @@
       event.preventDefault();
       const value = els.textInput.value;
       if (!String(value || '').trim()) return;
-      await sendTextMessage(value);
-      els.textInput.value = '';
+      const sent = await sendTextMessage(value);
+      if (sent && els.textInput) els.textInput.value = '';
     });
 
     loadHistory();
@@ -1601,17 +1627,20 @@
       updateTextRecordButton();
     }
 
+    window.addEventListener('beforeunload', () => {
+      if (!sessionActive || !SESSION_ID || !sessionStats.startTime) return;
+      sendUsageUpdate('pending', 'aborted');
+      teardownRealtimeSession();
+      cleanupInputRecorder(true);
+      cancelScheduledScroll();
+      if (layoutRaf) cancelAnimationFrame(layoutRaf);
+      if (transcriptObserver) transcriptObserver.disconnect();
+    });
+
     syncResponsiveLayout(true);
     setSessionState('idle');
     activateCurrentSessionView();
     queueLayoutSync();
-  });
-
-  window.addEventListener('beforeunload', () => {
-    if (!sessionActive || !SESSION_ID || !sessionStats.startTime) {
-      return;
-    }
-    sendUsageUpdate('pending', 'aborted');
   });
 
 })();

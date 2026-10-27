@@ -277,6 +277,11 @@ class Analyzer
                 continue;
             }
             $label = $role === 'assistant' ? 'Tutor' : 'Learner';
+            if (!empty($message['interrupted'])) {
+                $label .= ' (interrupted)';
+            } elseif (!empty($message['partial'])) {
+                $label .= ' (incomplete)';
+            }
             $transcriptLines[] = sprintf('%s: %s', $label, $text);
         }
 

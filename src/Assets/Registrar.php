@@ -12,11 +12,21 @@ class Registrar
         $stylePath = Config::pluginDir() . 'assets/agentos-embed.css';
         $scriptVersion = file_exists($scriptPath) ? (string) filemtime($scriptPath) : Config::VERSION;
         $styleVersion = file_exists($stylePath) ? (string) filemtime($stylePath) : Config::VERSION;
+        $realtimePath = Config::pluginDir() . 'assets/agentos-realtime.js';
+        $realtimeVersion = file_exists($realtimePath) ? (string) filemtime($realtimePath) : Config::VERSION;
+
+        wp_register_script(
+            'agentos-realtime',
+            plugins_url('assets/agentos-realtime.js', Config::pluginFile()),
+            [],
+            $realtimeVersion,
+            true
+        );
 
         wp_register_script(
             'agentos-embed',
             plugins_url('assets/agentos-embed.js', Config::pluginFile()),
-            [],
+            ['agentos-realtime'],
             $scriptVersion,
             true
         );

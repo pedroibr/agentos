@@ -26,3 +26,5 @@
 [2026-01-19][v9.0] Stabilized realtime user transcription ordering and echo handling; bumped plugin version to 9.0.
 [2025-10-21 12:30][v0.7.0] Hardened realtime token permissions with post visibility checks, localized transcript history timestamps in the embed, introduced the AgentOS Gutenberg block (sharing the shortcode renderer), and refreshed docs for the new editor workflow.
 [2026-03-17][v10.0] Refined the AgentOS embed UI across desktop and mobile: full-width container behavior with centered content bounds, smarter height handling, sidebar toggle states, smoother transcript auto-scroll, current-session feedback folded into the conversation panel, improved saved-transcript behavior, and asset cache busting via file modification versions.
+[2026-10-27][v10.3.4] Corrected voice session/event handling and diagnostics, preserved repeated user speech, and upgraded the original Realtime Mini defaults to gpt-realtime-2.1-mini with offline regression coverage.
+[2026-10-27][v10.3.5] Preserved interrupted voice captions in chronological saved history and separated archived text from resumable model context.

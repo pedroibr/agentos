@@ -1,0 +1,11 @@
+{
+  "name": "agentos-dev-tests",
+  "private": true,
+  "description": "Offline regression tests for the AgentOS WordPress plugin",
+  "scripts": {
+    "test": "node --test tests/*.test.js && php tests/model-selection.php && php tests/transcript-context.php"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.14"
+  }
+}
