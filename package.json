@@ -3,7 +3,7 @@
   "private": true,
   "description": "Offline regression tests for the AgentOS WordPress plugin",
   "scripts": {
-    "test": "node --test tests/*.test.js && php tests/model-selection.php && php tests/transcript-context.php"
+    "test": "node --test tests/*.test.js && php tests/model-selection.php && php tests/transcript-context.php && php tests/mcp-core.php && php tests/mcp-flow.php && php tests/usage-limiter.php && php tests/usage-preflight.php"
   },
   "devDependencies": {
     "linkedom": "0.18.14"

@@ -11,6 +11,8 @@ use AgentOS\Database\UsageRepository;
 use AgentOS\Subscriptions\UsageLimiter;
 use AgentOS\Subscriptions\UserSubscriptionRepository;
 use AgentOS\Subscriptions\SubscriptionRepository;
+use AgentOS\Mcp\SessionBroker;
+use AgentOS\Mcp\TextToolFlow;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -25,6 +27,7 @@ class RestController
     private UserSubscriptionRepository $userSubscriptions;
     private SubscriptionRepository $subscriptions;
     private UsageRepository $usage;
+    private ?SessionBroker $mcpBroker = null;
 
     public function __construct(
         Settings $settings,
@@ -49,6 +52,16 @@ class RestController
 
     public function registerRoutes(): void
     {
+        register_rest_route('agentos/v1', '/mcp-call', [
+            'methods' => WP_REST_Server::CREATABLE,
+            'permission_callback' => [$this, 'permissionNonce'],
+            'callback' => [$this, 'routeMcpCall'],
+        ]);
+        register_rest_route('agentos/v1', '/mcp-session', [
+            'methods' => WP_REST_Server::DELETABLE,
+            'permission_callback' => [$this, 'permissionNonce'],
+            'callback' => [$this, 'routeMcpSessionClose'],
+        ]);
         register_rest_route(
             'agentos/v1',
             '/realtime-token',
@@ -108,6 +121,20 @@ class RestController
                 'callback' => [$this, 'routeUsageUpdate'],
             ]
         );
+        register_rest_route(
+            'agentos/v1',
+            '/usage/event',
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'permission_callback' => [$this, 'permissionNonce'],
+                'callback' => [$this, 'routeUsageEvent'],
+            ]
+        );
+        register_rest_route('agentos/v1', '/usage/report', [
+            'methods' => WP_REST_Server::CREATABLE,
+            'permission_callback' => [$this, 'permissionNonce'],
+            'callback' => [$this, 'routeUsageReport'],
+        ]);
 
         register_rest_route(
             'agentos/v1',
@@ -313,15 +340,38 @@ class RestController
 
         $config = $this->agents->collectPostConfig($agent, $postId);
 
-        $sessionId = sanitize_text_field($request->get_param('session_id') ?: '');
-        if (!$sessionId) {
-            $sessionId = wp_generate_password(16, false);
-        }
-
         $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
         $userKey = $this->resolveUserKey($anonId);
+        $apiKey = $this->settings->resolveApiKey();
+        if (!$apiKey) {
+            return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
+        }
 
-        $limitResult = $this->limiter->evaluate($userKey, $agent);
+        $clientSessionId = sanitize_text_field($request->get_param('session_id') ?: '');
+        $sessionTicket = sanitize_text_field($request->get_param('session_ticket') ?: '');
+        $session = $clientSessionId !== '' ? $this->usage->getSession($clientSessionId) : null;
+        $isNewSession = !$session;
+        if ($session) {
+            if (!$this->usage->validateSession($clientSessionId, $sessionTicket, $userKey, $agentId, $postId)) {
+                return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+            }
+            $sessionId = $clientSessionId;
+            $limitResult = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'realtime']);
+        } else {
+            $sessionId = wp_generate_password(32, false, false);
+            $sessionTicket = wp_generate_password(48, false, false);
+            if ($userKey) {
+                $this->userSubscriptions->ensureUser($userKey, []);
+            }
+            $limitResult = $this->limiter->startSession($userKey, $agent, [
+                'session_id' => $sessionId,
+                'agent_id' => $agentId,
+                'post_id' => $postId,
+                'status' => 'pending',
+                'metadata' => ['origin' => 'realtime_token', 'mode' => 'realtime'],
+            ], $sessionTicket);
+            $session = $this->usage->getSession($sessionId);
+        }
         if (empty($limitResult['allowed'])) {
             $status = isset($limitResult['status']) ? (int) $limitResult['status'] : 402;
             $message = $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos');
@@ -334,23 +384,6 @@ class RestController
 
         if ($userKey) {
             $this->userSubscriptions->ensureUser($userKey, []);
-        }
-
-        $this->usage->logStart([
-            'session_id' => $sessionId,
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'status' => 'pending',
-            'metadata' => [
-                'origin' => 'realtime_token',
-            ],
-        ]);
-
-        $apiKey = $this->settings->resolveApiKey();
-        if (!$apiKey) {
-            return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
         }
 
         $ctxIn = $request->get_param('ctx');
@@ -417,10 +450,10 @@ class RestController
             $turnDetection['silence_duration_ms'] = 700;
         }
 
+        $speechLanguageHint = sanitize_key($config['speech_language_hint'] ?? '');
+        $transcriptionHint = sanitize_textarea_field($config['transcription_hint'] ?? '');
         $audioInput = [
-            'transcription' => [
-                'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
-            ],
+            'transcription' => Config::realtimeTranscriptionPayload($speechLanguageHint, $transcriptionHint, (string) ($config['transcription_delay'] ?? '')),
             'noise_reduction' => $noiseReduction === 'off'
                 ? null
                 : ['type' => $noiseReduction],
@@ -439,16 +472,42 @@ class RestController
                 ],
             ],
         ];
+        // Bound the maximum single-response overrun even when the plan is unlimited.
+        $sessionPayload['max_output_tokens'] = 2048;
 
-        $speechLanguageHint = sanitize_key($config['speech_language_hint'] ?? '');
-        if (in_array($speechLanguageHint, ['en', 'pt'], true)) {
-            $sessionPayload['audio']['input']['transcription']['language'] = $speechLanguageHint;
+        $realtimeBudget = $this->realtimeTokenBudget($limitResult, $agent);
+        if ($realtimeBudget !== null) {
+            if ($realtimeBudget < 1) {
+                if ($isNewSession) {
+                    $this->usage->releaseEmptySession($sessionId);
+                }
+                return new WP_Error('subscription_limit', __('The remaining voice token budget is too small to start a response.', 'agentos'), ['status' => 402]);
+            }
+            $sessionPayload['max_output_tokens'] = min(2048, $realtimeBudget);
         }
 
-        $transcriptionHint = sanitize_textarea_field($config['transcription_hint'] ?? '');
-        if ($transcriptionHint !== '') {
-            $sessionPayload['audio']['input']['transcription']['prompt'] = $transcriptionHint;
+        $toolGrant = $this->mcp()->issue($agent, $agentId, $postId, $sessionId);
+        if (is_wp_error($toolGrant)) {
+            if ($isNewSession) {
+                $this->usage->releaseEmptySession($sessionId);
+            }
+            return $toolGrant;
         }
+        if ($toolGrant['tools']) {
+            $sessionPayload['tools'] = array_map(static function ($tool) {
+                unset($tool['strict']);
+                return $tool;
+            }, $toolGrant['tools']);
+            $sessionPayload['tool_choice'] = 'auto';
+            $sessionPayload['instructions'] .= "\n\n" . $toolGrant['instructions'];
+        }
+
+        $this->usage->setSessionMetadata($sessionId, [
+            'origin' => 'realtime_token',
+            'mode' => 'realtime',
+            'realtime_control_required' => !empty($limitResult['realtime_control_required']),
+            'realtime_session_payload' => $sessionPayload,
+        ]);
 
         $response = wp_remote_post(
             'https://api.openai.com/v1/realtime/client_secrets',
@@ -465,6 +524,10 @@ class RestController
         );
 
         if (is_wp_error($response)) {
+            $this->mcp()->revoke($toolGrant['ticket']);
+            if ($isNewSession) {
+                $this->usage->releaseEmptySession($sessionId);
+            }
             return new WP_Error('openai_transport', $response->get_error_message(), ['status' => 500]);
         }
 
@@ -473,6 +536,10 @@ class RestController
         $json = json_decode($body, true);
 
         if ($code >= 400 || !is_array($json)) {
+            $this->mcp()->revoke($toolGrant['ticket']);
+            if ($isNewSession) {
+                $this->usage->releaseEmptySession($sessionId);
+            }
             return new WP_Error('openai_http', $body ?: __('Unknown error', 'agentos'), ['status' => $code ?: 500]);
         }
 
@@ -480,11 +547,17 @@ class RestController
             ?? ($json['client_secret']['value'] ?? null)
             ?? ($json['session']['client_secret']['value'] ?? null);
         if (!$clientSecret) {
+            $this->mcp()->revoke($toolGrant['ticket']);
+            if ($isNewSession) {
+                $this->usage->releaseEmptySession($sessionId);
+            }
             return new WP_Error('openai_no_secret', __('Ephemeral token missing', 'agentos'), ['status' => 500]);
         }
 
         return [
             'client_secret' => $clientSecret,
+            'tool_ticket' => $toolGrant['ticket'],
+            'tool_manifest' => $toolGrant['bindings'],
             'id' => $json['session']['id'] ?? ($json['id'] ?? null),
             'model' => $config['model'],
             'voice' => $config['voice'],
@@ -494,21 +567,37 @@ class RestController
             'session_cap' => $sessionCap,
             'warnings' => $limitResult['warnings'] ?? [],
             'session_id' => $sessionId,
+            'session_ticket' => $sessionTicket,
+            'realtime_control' => 'browser_reported',
+            'realtime_budget' => $realtimeBudget,
+            'remaining' => $limitResult['remaining'] ?? [],
             'context' => $contextData,
         ];
+    }
+
+    private function realtimeTokenBudget(array $decision, array $agent): ?int
+    {
+        $plan = is_array($decision['plan'] ?? null) ? $decision['plan'] : [];
+        $limits = $plan['limits'] ?? [];
+        $candidates = [];
+        if (!empty($plan['block_on_overage']) && (int) ($limits['realtime_tokens'] ?? 0) > 0) {
+            $candidates[] = max(0, (int) ($decision['remaining']['realtime_tokens'] ?? 0));
+        }
+        if ((int) ($decision['session_cap'] ?? ($agent['session_token_cap'] ?? 0)) > 0) {
+            $candidates[] = max(0, (int) ($decision['remaining']['session_tokens'] ?? 0));
+        }
+        return $candidates ? min($candidates) : null;
     }
 
     public function routeTextResponse(WP_REST_Request $request)
     {
         $postId = intval($request->get_param('post_id') ?: 0);
         $agentId = sanitize_key($request->get_param('agent_id') ?: '');
-        $sessionId = sanitize_text_field($request->get_param('session_id') ?: '');
+        $clientSessionId = sanitize_text_field($request->get_param('session_id') ?: '');
+        $sessionTicket = sanitize_text_field($request->get_param('session_ticket') ?: '');
         $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
         $message = sanitize_textarea_field($request->get_param('message') ?: '');
         $transcript = $request->get_param('transcript');
-        $tokensText = max(0, intval($request->get_param('tokens_text') ?: 0));
-        $tokensTotal = max(0, intval($request->get_param('tokens_total') ?: 0));
-        $durationSeconds = max(0, intval($request->get_param('duration_seconds') ?: 0));
 
         if (!$postId) {
             return new WP_Error('no_post', __('post_id required', 'agentos'), ['status' => 400]);
@@ -550,43 +639,45 @@ class RestController
         }
 
         $config = $this->agents->collectPostConfig($agent, $postId);
-        if (!$sessionId) {
-            $sessionId = wp_generate_password(16, false);
-        }
-
         $userKey = $this->resolveUserKey($anonId);
-        $limitResult = $this->limiter->evaluate($userKey, $agent);
-        if (empty($limitResult['allowed'])) {
-            $status = isset($limitResult['status']) ? (int) $limitResult['status'] : 402;
-            $messageText = $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos');
-            $code = $limitResult['error_code'] ?? 'subscription_limit';
-            return new WP_Error($code, $messageText, ['status' => $status]);
+        $apiKey = $this->settings->resolveApiKey();
+        if (!$apiKey) {
+            return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
         }
-
-        $subscriptionSlug = $limitResult['subscription_slug'] ?? '';
-        $sessionCap = isset($limitResult['session_cap']) ? (int) $limitResult['session_cap'] : 0;
 
         if ($userKey) {
             $this->userSubscriptions->ensureUser($userKey, []);
         }
 
-        $this->usage->logStart([
-            'session_id' => $sessionId,
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'status' => 'running',
-            'metadata' => [
-                'origin' => 'text_response',
-                'mode' => 'text',
-            ],
-        ]);
-
-        $apiKey = $this->settings->resolveApiKey();
-        if (!$apiKey) {
-            return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
+        $isNewSession = false;
+        $session = $clientSessionId !== '' ? $this->usage->getSession($clientSessionId) : null;
+        if ($session) {
+            if (!$this->usage->validateSession($clientSessionId, $sessionTicket, $userKey, $agentId, $postId)) {
+                return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+            }
+            $sessionId = $clientSessionId;
+            $limitResult = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'text']);
+            if (empty($limitResult['allowed'])) {
+                return new WP_Error($limitResult['error_code'] ?? 'subscription_limit', $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos'), ['status' => (int) ($limitResult['status'] ?? 402)]);
+            }
+        } else {
+            $isNewSession = true;
+            $sessionId = wp_generate_password(32, false, false);
+            $sessionTicket = wp_generate_password(48, false, false);
+            $limitResult = $this->limiter->startSession($userKey, $agent, [
+                'session_id' => $sessionId,
+                'agent_id' => $agentId,
+                'post_id' => $postId,
+                'status' => 'running',
+                'metadata' => ['origin' => 'text_response', 'mode' => 'text'],
+            ], $sessionTicket);
+            if (empty($limitResult['allowed'])) {
+                return new WP_Error($limitResult['error_code'] ?? 'subscription_limit', $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos'), ['status' => (int) ($limitResult['status'] ?? 402)]);
+            }
         }
+
+        $subscriptionSlug = (string) ($session['subscription_slug'] ?? $limitResult['subscription_slug'] ?? '');
+        $sessionCap = isset($limitResult['session_cap']) ? (int) $limitResult['session_cap'] : 0;
 
         $settings = $this->settings->get();
         $allowedContext = !empty($agent['context_params']) ? (array) $agent['context_params'] : (array) ($settings['context_params'] ?? []);
@@ -601,60 +692,163 @@ class RestController
             'input' => $input,
         ];
 
-        $response = wp_remote_post(
-            'https://api.openai.com/v1/responses',
-            [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $apiKey,
-                    'Content-Type' => 'application/json',
-                ],
-                'body' => wp_json_encode($payload),
-                'timeout' => 40,
-            ]
-        );
-
-        if (is_wp_error($response)) {
-            return new WP_Error('openai_transport', $response->get_error_message(), ['status' => 500]);
+        $continuation = (string) ($request->get_param('tool_continuation') ?? '');
+        $ticket = (string) ($request->get_param('tool_ticket') ?? '');
+        if ($continuation !== '') {
+            $grant = $this->mcp()->validate($ticket, $agentId, $postId, $sessionId);
+            if (is_wp_error($grant)) {
+                return $grant;
+            }
+        } else {
+            $toolGrant = $this->mcp()->issue($agent, $agentId, $postId, $sessionId);
+            if (is_wp_error($toolGrant)) {
+                if ($isNewSession) {
+                    $this->usage->releaseEmptySession($sessionId);
+                }
+                return $toolGrant;
+            }
+            $ticket = $toolGrant['ticket'];
+            if ($toolGrant['tools']) {
+                $payload['tools'] = $toolGrant['tools'];
+                $payload['tool_choice'] = 'auto';
+                $payload['instructions'] .= "\n\n" . $toolGrant['instructions'];
+            }
         }
 
-        $code = wp_remote_retrieve_response_code($response);
-        $body = wp_remote_retrieve_body($response);
-        $json = json_decode($body, true);
-        if ($code >= 400 || !is_array($json)) {
-            return new WP_Error('openai_http', $body ?: __('Unknown error', 'agentos'), ['status' => $code ?: 500]);
+        $plan = $limitResult['plan'] ?? null;
+        $planTextCap = is_array($plan) ? (int) ($plan['limits']['text_tokens'] ?? 0) : 0;
+        $agentTextCap = max(0, (int) ($agent['session_token_cap'] ?? 0));
+        $strictTextBudget = $agentTextCap > 0 || (!empty($plan['block_on_overage']) && ($planTextCap > 0 || (int) ($plan['session_token_cap'] ?? 0) > 0));
+        $beforeRequest = function (array $requestPayload) use ($strictTextBudget, $apiKey, $userKey, $agent, $sessionId, $subscriptionSlug, $sessionCap, $plan, $textModel, $postId) {
+            if (!$strictTextBudget) {
+                return ['payload' => $requestPayload];
+            }
+
+            $inputTokens = $this->countResponsesInputTokens($requestPayload, $apiKey);
+            if (is_wp_error($inputTokens)) {
+                return $inputTokens;
+            }
+
+            $lockScope = $userKey !== '' ? 'user:' . $userKey : 'guest:' . sanitize_key($agent['slug'] ?? '') . ':' . $postId;
+            $reserved = $this->usage->withUsageLock($lockScope, function () use ($requestPayload, $inputTokens, $userKey, $agent, $sessionId, $subscriptionSlug, $sessionCap, $plan, $textModel) {
+                $fresh = $this->limiter->evaluate($userKey, $agent, [
+                    'session_id' => $sessionId,
+                    'mode' => 'text',
+                    'reserve_text_tokens' => $inputTokens,
+                    'reserve_tokens' => $inputTokens,
+                ]);
+                if (empty($fresh['allowed'])) {
+                    return new WP_Error($fresh['error_code'] ?? 'subscription_limit', $fresh['message'] ?? __('Usage limit reached for this subscription.', 'agentos'), ['status' => (int) ($fresh['status'] ?? 402)]);
+                }
+
+                $available = [];
+                if (!empty($plan['block_on_overage']) && (int) ($plan['limits']['text_tokens'] ?? 0) > 0) {
+                    $available[] = max(0, (int) ($fresh['remaining']['text_tokens'] ?? 0));
+                }
+                if ($sessionCap > 0) {
+                    $available[] = max(0, (int) ($fresh['remaining']['session_tokens'] ?? 0));
+                }
+                if (!$available) {
+                    return new WP_Error('usage_budget_unknown', __('This session has a finite token cap but its remaining budget could not be calculated.', 'agentos'), ['status' => 503]);
+                }
+                $budget = min($available);
+                $outputLimit = min(2048, $budget - (int) $inputTokens);
+                if ($outputLimit < Config::RESPONSES_MIN_OUTPUT_TOKENS) {
+                    return new WP_Error('subscription_limit', __('At least 16 output tokens must remain for another Responses API request.', 'agentos'), ['status' => 402]);
+                }
+
+                $requestPayload['max_output_tokens'] = $outputLimit;
+                $reservationId = wp_generate_password(40, false, false);
+                $periodHours = max(1, (int) ($plan['period_hours'] ?? 24));
+                if (!$this->usage->reserveBudget($reservationId, $sessionId, $userKey, $subscriptionSlug, 'text', (int) $inputTokens + $outputLimit, $periodHours)) {
+                    return new WP_Error('usage_reservation_failed', __('Unable to reserve token budget for this response.', 'agentos'), ['status' => 503]);
+                }
+                return ['payload' => $requestPayload, 'reservation_id' => $reservationId];
+            });
+
+            if ($reserved === false) {
+                return new WP_Error('usage_busy', __('Usage is being updated. Please retry in a moment.', 'agentos'), ['status' => 503]);
+            }
+            return $reserved;
+        };
+        $onUsage = function (string $reservationId, ?array $usageEvent, bool $unknown) use ($sessionId, $textModel) {
+            if ($usageEvent === null) {
+                if ($reservationId !== '') {
+                    $this->usage->releaseBudget($reservationId, $unknown);
+                }
+                return true;
+            }
+            $usage = [
+                'input_tokens' => (int) ($usageEvent['input_tokens'] ?? 0),
+                'output_tokens' => (int) ($usageEvent['output_tokens'] ?? 0),
+                'total_tokens' => (int) ($usageEvent['total_tokens'] ?? 0),
+            ];
+            $metadata = [
+                'response_id' => (string) ($usageEvent['event_key'] ?? ''),
+                'cached_input_tokens' => (int) ($usageEvent['cached_input_tokens'] ?? 0),
+                'status' => (string) ($usageEvent['status'] ?? 'completed'),
+                'model' => $textModel,
+            ];
+            $eventKey = (string) ($usageEvent['event_key'] ?? '');
+            $stored = $reservationId !== ''
+                ? $this->usage->settleBudget($reservationId, $sessionId, $eventKey, 'text', $usage, 'server', $metadata)
+                : $this->usage->recordEvent($sessionId, $eventKey, 'text', $usage, 'server', $metadata);
+            if (!$stored) {
+                if ($reservationId !== '') {
+                    $this->usage->releaseBudget($reservationId, true);
+                }
+                $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            }
+            return $stored;
+        };
+
+        $flow = (new TextToolFlow($this->mcp()))->run($payload, $apiKey, $ticket, $continuation, $beforeRequest, $onUsage);
+        if (is_wp_error($flow)) {
+            $errorCode = $flow->get_error_code();
+            $errorData = $flow->get_error_data();
+            $providerStatus = is_array($errorData) ? (int) ($errorData['provider_status'] ?? 0) : 0;
+            $definiteNoUsage = in_array($errorCode, ['usage_preflight_failed', 'usage_budget_unknown', 'usage_reservation_failed', 'usage_busy', 'subscription_limit'], true)
+                || ($errorCode === 'openai_http' && $providerStatus >= 400 && $providerStatus < 500);
+            if ($isNewSession && $definiteNoUsage) {
+                $this->mcp()->revoke($ticket);
+                $this->usage->releaseEmptySession($sessionId);
+                return $flow;
+            }
+            $data = is_array($errorData) ? $errorData : [];
+            $data['session_id'] = $sessionId;
+            $data['session_ticket'] = $sessionTicket;
+            return new WP_Error($errorCode, $flow->get_error_message(), $data);
         }
+        $json = $flow['response'];
 
         $assistantText = $this->extractResponsesText($json);
-        if ($assistantText === '') {
+        if ($assistantText === '' && !$flow['tool_calls']) {
             return new WP_Error('openai_empty', __('The model returned an empty response.', 'agentos'), ['status' => 502]);
         }
 
-        $usage = is_array($json['usage'] ?? null) ? $json['usage'] : [];
+        $usage = $flow['usage'];
         $requestTokens = max(0, (int) ($usage['total_tokens'] ?? 0));
-        $nextTextTokens = $tokensText + $requestTokens;
-        $nextTotalTokens = max($tokensTotal + $requestTokens, $nextTextTokens);
+        $sessionUsage = $this->usage->sessionUsage($sessionId);
 
         $this->usage->updateBySession($sessionId, [
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'tokens_text' => $nextTextTokens,
-            'tokens_total' => $nextTotalTokens,
-            'duration_seconds' => $durationSeconds,
             'status' => 'running',
             'metadata' => [
                 'mode' => 'text',
                 'origin' => 'text_response',
                 'input_tokens' => max(0, (int) ($usage['input_tokens'] ?? 0)),
                 'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+                'session_ticket_verified' => true,
             ],
         ]);
 
         return [
             'text' => $assistantText,
+            'tool_ticket' => $ticket,
+            'tool_calls' => $flow['tool_calls'],
+            'tool_continuation' => $flow['continuation'],
             'model' => $textModel,
             'session_id' => $sessionId,
+            'session_ticket' => $sessionTicket,
             'subscription' => $subscriptionSlug,
             'session_cap' => $sessionCap,
             'warnings' => $limitResult['warnings'] ?? [],
@@ -663,10 +857,94 @@ class RestController
                 'input_tokens' => max(0, (int) ($usage['input_tokens'] ?? 0)),
                 'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
                 'total_tokens' => $requestTokens,
-                'session_text_tokens' => $nextTextTokens,
-                'session_total_tokens' => $nextTotalTokens,
+                'session_text_tokens' => (int) ($sessionUsage['tokens_text'] ?? 0) + (int) ($sessionUsage['tokens_analysis'] ?? 0),
+                'session_total_tokens' => (int) ($sessionUsage['tokens_total'] ?? 0),
             ],
         ];
+    }
+
+    private function mcp(): SessionBroker
+    {
+        if ($this->mcpBroker === null) {
+            $this->mcpBroker = new SessionBroker();
+        }
+        return $this->mcpBroker;
+    }
+
+    public function routeMcpCall(WP_REST_Request $request)
+    {
+        $context = $this->mcpRequestContext($request);
+        if (is_wp_error($context)) {
+            return $context;
+        }
+        $raw = $request->get_param('arguments');
+        if (!is_string($raw) || strlen($raw) > 32768) {
+            return new WP_Error('mcp_arguments', __('Tool arguments must be a JSON object.', 'agentos'), ['status' => 400]);
+        }
+        $arguments = json_decode($raw);
+        if (!$arguments instanceof \stdClass) {
+            return new WP_Error('mcp_arguments', __('Tool arguments must be a JSON object.', 'agentos'), ['status' => 400]);
+        }
+        $decision = $request->get_param('approve');
+        if ($decision !== null && !is_bool($decision)) {
+            return new WP_Error('mcp_approval', __('Invalid approval decision.', 'agentos'), ['status' => 400]);
+        }
+        return $this->mcp()->invoke(
+            $context['agent'], (string) $request->get_param('tool_ticket'),
+            $context['agent_id'], $context['post_id'], $context['session_id'],
+            (string) $request->get_param('call_id'), (string) $request->get_param('name'),
+            (array) $arguments, $decision, (string) $request->get_param('approval_id')
+        );
+    }
+
+    public function routeMcpSessionClose(WP_REST_Request $request)
+    {
+        $ticket = (string) $request->get_param('tool_ticket');
+        $agentId = sanitize_key((string) $request->get_param('agent_id'));
+        $postId = (int) $request->get_param('post_id');
+        $sessionId = sanitize_text_field((string) $request->get_param('session_id'));
+        $userKey = $this->resolveUserKey(sanitize_text_field((string) $request->get_param('anon_id')));
+        $sessionTicket = sanitize_text_field((string) $request->get_param('session_ticket'));
+        if (!$this->usage->validateSession($sessionId, $sessionTicket, $userKey, $agentId, $postId)) {
+            return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+        }
+        $grant = $this->mcp()->validate($ticket, $agentId, $postId, $sessionId);
+        if (is_wp_error($grant)) {
+            return $grant;
+        }
+        $this->mcp()->revoke($ticket);
+        return ['closed' => true];
+    }
+
+    private function mcpRequestContext(WP_REST_Request $request)
+    {
+        $agentId = sanitize_key($request->get_param('agent_id') ?? '');
+        $postId = (int) $request->get_param('post_id');
+        $sessionId = sanitize_text_field($request->get_param('session_id') ?? '');
+        $agent = $this->agents->get($agentId);
+        $post = get_post($postId);
+        if (!$agent || !$post || $post->post_status === 'trash' || $sessionId === '') {
+            return new WP_Error('mcp_context', __('This conversation is unavailable.', 'agentos'), ['status' => 403]);
+        }
+        if (post_password_required($post) || (!current_user_can('read_post', $postId) && !is_post_publicly_viewable($post))
+            || (!empty($agent['post_types']) && !in_array(get_post_type($postId), $agent['post_types'], true))) {
+            return new WP_Error('mcp_context', __('You do not have access to this agent or content.', 'agentos'), ['status' => 403]);
+        }
+        $userKey = $this->resolveUserKey(sanitize_text_field($request->get_param('anon_id') ?? ''));
+        if (!$this->usage->validateSession(
+            $sessionId,
+            sanitize_text_field($request->get_param('session_ticket') ?? ''),
+            $userKey,
+            $agentId,
+            $postId
+        )) {
+            return new WP_Error('mcp_context', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+        }
+        $limits = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'mcp']);
+        if (empty($limits['allowed'])) {
+            return new WP_Error('mcp_access', __('Tool access is unavailable for this subscription.', 'agentos'), ['status' => 403]);
+        }
+        return ['agent' => $agent, 'agent_id' => $agentId, 'post_id' => $postId, 'session_id' => $sessionId];
     }
 
     public function routeTextTranscription(WP_REST_Request $request)
@@ -708,14 +986,6 @@ class RestController
         }
 
         $userKey = $this->resolveUserKey($anonId);
-        $limitResult = $this->limiter->evaluate($userKey, $agent);
-        if (empty($limitResult['allowed'])) {
-            $status = isset($limitResult['status']) ? (int) $limitResult['status'] : 402;
-            $messageText = $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos');
-            $code = $limitResult['error_code'] ?? 'subscription_limit';
-            return new WP_Error($code, $messageText, ['status' => $status]);
-        }
-
         $files = $request->get_file_params();
         $audio = $files['audio'] ?? null;
         if (!is_array($audio) || empty($audio['tmp_name']) || !is_uploaded_file($audio['tmp_name'])) {
@@ -727,14 +997,148 @@ class RestController
             return new WP_Error('no_key', __('OpenAI key not configured', 'agentos'), ['status' => 500]);
         }
 
-        $response = $this->requestAudioTranscription($audio, $apiKey, $language);
+        $clientSessionId = sanitize_text_field((string) $request->get_param('session_id'));
+        $sessionTicket = sanitize_text_field((string) $request->get_param('session_ticket'));
+        $session = $clientSessionId !== '' ? $this->usage->getSession($clientSessionId) : null;
+        $isNewSession = !$session;
+        if ($session) {
+            if (!$this->usage->validateSession($clientSessionId, $sessionTicket, $userKey, $agentId, $postId)) {
+                return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+            }
+            $sessionId = $clientSessionId;
+            $limitResult = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'transcription']);
+        } else {
+            $sessionId = wp_generate_password(32, false, false);
+            $sessionTicket = wp_generate_password(48, false, false);
+            if ($userKey) {
+                $this->userSubscriptions->ensureUser($userKey, []);
+            }
+            $limitResult = $this->limiter->startSession($userKey, $agent, [
+                'session_id' => $sessionId,
+                'agent_id' => $agentId,
+                'post_id' => $postId,
+                'status' => 'pending',
+                'metadata' => ['origin' => 'text_transcription', 'mode' => 'text'],
+            ], $sessionTicket);
+        }
+        if (empty($limitResult['allowed'])) {
+            $status = isset($limitResult['status']) ? (int) $limitResult['status'] : 402;
+            $messageText = $limitResult['message'] ?? __('Usage limit reached for this subscription.', 'agentos');
+            $code = $limitResult['error_code'] ?? 'subscription_limit';
+            return new WP_Error($code, $messageText, ['status' => $status]);
+        }
+
+        $lockScope = $userKey !== '' ? 'user:' . $userKey : 'guest:' . $agentId . ':' . $postId;
+        $reservation = $this->usage->withUsageLock($lockScope, function () use ($userKey, $agent, $sessionId, $session, $limitResult) {
+            $fresh = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'transcription']);
+            if (empty($fresh['allowed'])) {
+                return false;
+            }
+            $budget = $this->realtimeTokenBudget($fresh, $agent);
+            if ($budget === null) {
+                return ['reservation_id' => '', 'decision' => $fresh];
+            }
+            if ($budget < 1) {
+                return false;
+            }
+            $reservationId = wp_generate_password(48, false, false);
+            $plan = is_array($fresh['plan'] ?? null) ? $fresh['plan'] : [];
+            $slug = (string) ($session['subscription_slug'] ?? $fresh['subscription_slug'] ?? $limitResult['subscription_slug'] ?? '');
+            if (!$this->usage->reserveBudget($reservationId, $sessionId, $userKey, $slug, 'realtime', $budget, max(1, (int) ($plan['period_hours'] ?? 24)))) {
+                return false;
+            }
+            return ['reservation_id' => $reservationId, 'decision' => $fresh];
+        });
+        if ($reservation === false) {
+            if ($isNewSession) {
+                $this->usage->releaseEmptySession($sessionId);
+            }
+            return new WP_Error('subscription_limit', __('Unable to reserve the current audio transcription budget.', 'agentos'), ['status' => 402]);
+        }
+        $reservationId = (string) ($reservation['reservation_id'] ?? '');
+        $limitResult = $reservation['decision'] ?? $limitResult;
+
+        $requestId = 'transcription_' . wp_generate_password(32, false, false);
+        $response = $this->requestAudioTranscription($audio, $apiKey, $language, $requestId);
         if (is_wp_error($response)) {
+            $errorData = $response->get_error_data();
+            $providerStatus = is_array($errorData) ? (int) ($errorData['status'] ?? 0) : 0;
+            if ($reservationId !== '') {
+                $this->usage->releaseBudget($reservationId, $providerStatus === 0 || $providerStatus >= 500);
+            } elseif ($response->get_error_code() === 'openai_transport') {
+                $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            }
+            if ($isNewSession && $providerStatus >= 400 && $providerStatus < 500) {
+                $this->usage->releaseEmptySession($sessionId);
+                return $response;
+            }
+            if ($providerStatus === 0 || $providerStatus >= 500 || $response->get_error_code() === 'openai_transport') {
+                $data = is_array($errorData) ? $errorData : [];
+                $data['session_id'] = $sessionId;
+                $data['session_ticket'] = $sessionTicket;
+                return new WP_Error($response->get_error_code(), $response->get_error_message(), $data);
+            }
             return $response;
+        }
+
+        $providerUsage = is_array($response['usage'] ?? null) ? $response['usage'] : null;
+        if (!$providerUsage) {
+            if ($reservationId !== '') {
+                $this->usage->releaseBudget($reservationId, true);
+            }
+            $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            return new WP_Error('transcription_usage_missing', __('The transcription service did not return usage data. The result was withheld so this request is not silently treated as free.', 'agentos'), ['status' => 502, 'session_id' => $sessionId, 'session_ticket' => $sessionTicket]);
+        }
+        $eventKey = sanitize_text_field((string) ($response['request_id'] ?? $requestId)) ?: $requestId;
+        $usageData = ['total_tokens' => 0];
+        $usageType = sanitize_key((string) ($providerUsage['type'] ?? ''));
+        if ($usageType === 'tokens') {
+            $usageData = [
+                'input_tokens' => max(0, (int) ($providerUsage['input_tokens'] ?? 0)),
+                'output_tokens' => max(0, (int) ($providerUsage['output_tokens'] ?? 0)),
+                'total_tokens' => max(0, (int) ($providerUsage['total_tokens'] ?? ((int) ($providerUsage['input_tokens'] ?? 0) + (int) ($providerUsage['output_tokens'] ?? 0)))),
+            ];
+        } elseif ($usageType === 'duration') {
+            $usageData['transcription_seconds'] = max(0, (float) ($providerUsage['seconds'] ?? 0));
+        } else {
+            if ($reservationId !== '') {
+                $this->usage->releaseBudget($reservationId, true);
+            }
+            $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            return new WP_Error('transcription_usage_invalid', __('The transcription service returned an unsupported usage format.', 'agentos'), ['status' => 502, 'session_id' => $sessionId, 'session_ticket' => $sessionTicket]);
+        }
+        $eventMetadata = ['model' => Config::FALLBACK_TRANSCRIBE_MODEL, 'usage_type' => $usageType, 'request_id' => $eventKey];
+        $stored = $reservationId !== ''
+            ? $this->usage->settleBudget($reservationId, $sessionId, $eventKey, 'transcription', $usageData, 'server', $eventMetadata)
+            : $this->usage->recordEvent($sessionId, $eventKey, 'transcription', $usageData, 'server', $eventMetadata);
+        if (!$stored) {
+            if ($reservationId !== '') {
+                $this->usage->releaseBudget($reservationId, true);
+            }
+            $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            return new WP_Error('transcription_usage_persist_failed', __('Unable to record transcription usage. The transcript was withheld.', 'agentos'), ['status' => 503, 'session_id' => $sessionId, 'session_ticket' => $sessionTicket]);
+        }
+
+        $after = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'transcription']);
+        if (empty($after['allowed'])) {
+            return new WP_Error('subscription_limit', $after['message'] ?? __('The recorded transcription reached the current usage limit.', 'agentos'), [
+                'status' => (int) ($after['status'] ?? 402),
+                'session_id' => $sessionId,
+                'session_ticket' => $sessionTicket,
+                'usage' => $this->usage->sessionUsage($sessionId),
+            ]);
+        }
+        if (trim((string) ($response['text'] ?? '')) === '') {
+            return new WP_Error('openai_empty', __('The transcription service returned empty text.', 'agentos'), ['status' => 502, 'session_id' => $sessionId, 'session_ticket' => $sessionTicket]);
         }
 
         return [
             'text' => $response['text'],
             'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
+            'session_id' => $sessionId,
+            'session_ticket' => $sessionTicket,
+            'usage' => $this->usage->sessionUsage($sessionId),
+            'warnings' => $after['warnings'] ?? [],
         ];
     }
 
@@ -743,6 +1147,7 @@ class RestController
         $postId = intval($request->get_param('post_id') ?: 0);
         $agentId = sanitize_key($request->get_param('agent_id') ?: '');
         $sessionId = sanitize_text_field($request->get_param('session_id') ?: '');
+        $sessionTicket = sanitize_text_field($request->get_param('session_ticket') ?: '');
         $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
         $model = sanitize_text_field($request->get_param('model') ?: '');
         $voice = sanitize_text_field($request->get_param('voice') ?: '');
@@ -766,6 +1171,19 @@ class RestController
         if (!$postId || !$sessionId || !$agentId || !is_array($transcript)) {
             return new WP_Error('bad_payload', __('Missing fields', 'agentos'), ['status' => 400]);
         }
+
+        $usageSession = $this->usage->validateSession($sessionId, $sessionTicket, $userKey, $agentId, $postId);
+        if (!$usageSession) {
+            return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+        }
+        $actualUsage = $this->usage->sessionUsage($sessionId);
+        $subscriptionSlug = (string) ($usageSession['subscription_slug'] ?? '');
+        $tokensRealtime = (int) ($actualUsage['tokens_realtime'] ?? 0);
+        $tokensText = (int) ($actualUsage['tokens_text'] ?? 0)
+            + (int) ($actualUsage['tokens_analysis'] ?? 0)
+            + (int) ($actualUsage['tokens_transcription'] ?? 0);
+        $tokensTotal = (int) ($actualUsage['tokens_total'] ?? 0);
+        $durationSeconds = max(0, (int) ($usageSession['duration_seconds'] ?? 0));
 
         $agent = $this->agents->get($agentId);
         if (!$agent) {
@@ -819,31 +1237,9 @@ class RestController
             return new WP_Error('db_insert', $reason, ['status' => 500]);
         }
 
-        $this->usage->logStart([
-            'session_id' => $sessionId,
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'status' => $tokensTotal > 0 ? 'final' : 'pending',
-            'metadata' => [
-                'origin' => 'transcript_save',
-            ],
-        ]);
-
         $this->usage->updateBySession($sessionId, [
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'tokens_realtime' => $tokensRealtime,
-            'tokens_text' => $tokensText,
-            'tokens_total' => $tokensTotal,
-            'duration_seconds' => $durationSeconds,
-            'status' => 'final',
-            'metadata' => [
-                'transcript_saved' => true,
-            ],
+            'status' => 'saved',
+            'metadata' => ['transcript_saved' => true, 'usage_source' => 'server_ledger'],
         ]);
 
         if ($analysisEnabled && $analysisAuto) {
@@ -1022,7 +1418,32 @@ class RestController
         return trim(implode('', $parts));
     }
 
-    private function requestAudioTranscription(array $audio, string $apiKey, string $language = '')
+    /** Count the exact Responses input with the provider's token-count endpoint. */
+    private function countResponsesInputTokens(array $payload, string $apiKey)
+    {
+        $supportedFields = ['model', 'instructions', 'input', 'tools', 'tool_choice', 'text', 'reasoning', 'include'];
+        $countPayload = array_intersect_key($payload, array_flip($supportedFields));
+        $response = wp_remote_post('https://api.openai.com/v1/responses/input_tokens', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $apiKey,
+                'Content-Type' => 'application/json',
+            ],
+            'body' => wp_json_encode($countPayload),
+            'timeout' => 25,
+        ]);
+        if (is_wp_error($response)) {
+            return new WP_Error('usage_preflight_failed', __('Unable to verify the exact input size for this limited response.', 'agentos'), ['status' => 503]);
+        }
+
+        $status = wp_remote_retrieve_response_code($response);
+        $json = json_decode(wp_remote_retrieve_body($response), true);
+        if ($status < 200 || $status >= 300 || !is_array($json) || !isset($json['input_tokens']) || !is_numeric($json['input_tokens'])) {
+            return new WP_Error('usage_preflight_failed', __('The text service could not verify this response budget. Please retry later.', 'agentos'), ['status' => 503]);
+        }
+        return max(0, (int) $json['input_tokens']);
+    }
+
+    private function requestAudioTranscription(array $audio, string $apiKey, string $language = '', string $requestId = '')
     {
         if (!function_exists('curl_init') || !function_exists('curl_file_create')) {
             return new WP_Error(
@@ -1039,11 +1460,13 @@ class RestController
         $postFields = [
             'file' => $file,
             'model' => Config::FALLBACK_TRANSCRIBE_MODEL,
+            'response_format' => 'json',
         ];
         if ($language !== '') {
             $postFields['language'] = $language;
         }
 
+        $responseHeaders = [];
         $ch = curl_init('https://api.openai.com/v1/audio/transcriptions');
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -1053,6 +1476,13 @@ class RestController
             ],
             CURLOPT_POSTFIELDS => $postFields,
             CURLOPT_TIMEOUT => 60,
+            CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$responseHeaders) {
+                if (strpos($line, ':') !== false) {
+                    [$name, $value] = explode(':', $line, 2);
+                    $responseHeaders[strtolower(trim($name))] = trim($value);
+                }
+                return strlen($line);
+            },
         ]);
 
         $body = curl_exec($ch);
@@ -1070,13 +1500,10 @@ class RestController
             return new WP_Error('openai_http', (string) $body ?: __('Unknown error', 'agentos'), ['status' => $code ?: 500]);
         }
 
-        $text = trim((string) ($json['text'] ?? ''));
-        if ($text === '') {
-            return new WP_Error('openai_empty', __('The transcription service returned empty text.', 'agentos'), ['status' => 502]);
-        }
-
         return [
-            'text' => $text,
+            'text' => trim((string) ($json['text'] ?? '')),
+            'usage' => is_array($json['usage'] ?? null) ? $json['usage'] : null,
+            'request_id' => sanitize_text_field((string) ($responseHeaders['x-request-id'] ?? $requestId)),
         ];
     }
 
@@ -1357,64 +1784,201 @@ class RestController
         if (!$sessionId) {
             return new WP_Error('missing_session', __('session_id required.', 'agentos'), ['status' => 400]);
         }
-
         $agentId = sanitize_key($request->get_param('agent_id') ?: '');
         $postId = intval($request->get_param('post_id') ?: 0);
-        $subscriptionSlug = sanitize_key($request->get_param('subscription_slug') ?: '');
         $anonId = sanitize_text_field($request->get_param('anon_id') ?: '');
         $userKey = $this->resolveUserKey($anonId);
-        if (!$userKey) {
-            $userKey = sanitize_text_field($request->get_param('user_key') ?: '');
-        }
-
-        $tokensRealtime = max(0, intval($request->get_param('tokens_realtime') ?: 0));
-        $tokensText = max(0, intval($request->get_param('tokens_text') ?: 0));
-        $tokensTotal = max($tokensRealtime + $tokensText, intval($request->get_param('tokens_total') ?: 0));
-        $durationSeconds = max(0, intval($request->get_param('duration_seconds') ?: 0));
         $status = sanitize_key($request->get_param('status') ?: 'final');
-        $mode = sanitize_key($request->get_param('mode') ?: '');
         $reason = sanitize_key($request->get_param('reason') ?: '');
-
-        if ($userKey) {
-            $this->userSubscriptions->ensureUser($userKey, []);
+        $session = $this->usage->validateSession(
+            $sessionId,
+            sanitize_text_field($request->get_param('session_ticket') ?: ''),
+            $userKey,
+            $agentId,
+            $postId
+        );
+        if (!$session) {
+            return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
         }
 
-        $this->usage->logStart([
-            'session_id' => $sessionId,
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'status' => $status,
-            'metadata' => [
-                'origin' => 'session_update',
-            ],
-        ]);
-
+        if (!in_array($status, ['pending', 'running', 'paused', 'final', 'usage_error'], true)) {
+            $status = 'running';
+        }
         $this->usage->updateBySession($sessionId, [
-            'user_key' => $userKey,
-            'subscription_slug' => $subscriptionSlug,
-            'agent_id' => $agentId,
-            'post_id' => $postId,
-            'tokens_realtime' => $tokensRealtime,
-            'tokens_text' => $tokensText,
-            'tokens_total' => $tokensTotal,
-            'duration_seconds' => $durationSeconds,
             'status' => $status,
-            'metadata' => [
-                'mode' => $mode,
-                'reason' => $reason,
-            ],
         ]);
-
+        $lifecycleMetadata = [
+            'origin' => 'session_lifecycle',
+            'reason' => $reason,
+            'usage_source' => 'server_verified_and_browser_reported',
+        ];
+        if (in_array($reason, ['stopped_with_unconfirmed_usage', 'saving_with_unconfirmed_usage', 'response_usage_missing', 'disconnected_with_unconfirmed_usage'], true)) {
+            $lifecycleMetadata['usage_report_incomplete'] = true;
+        }
+        $this->usage->setSessionMetadata($sessionId, $lifecycleMetadata);
+        $actual = $this->usage->sessionUsage($sessionId);
         return [
             'session_id' => $sessionId,
-            'tokens' => [
-                'realtime' => $tokensRealtime,
-                'text' => $tokensText,
-                'total' => $tokensTotal,
-            ],
+            'usage' => $actual,
         ];
+    }
+
+    public function routeUsageEvent(WP_REST_Request $request)
+    {
+        $params = $request->get_params();
+        $params['events'] = [[
+            'event_id' => $params['event_id'] ?? '',
+            'category' => $params['category'] ?? '',
+            'response_status' => $params['response_status'] ?? '',
+            'usage' => $params['usage'] ?? null,
+        ]];
+        $request->set_body_params($params);
+        return $this->routeUsageReport($request);
+    }
+
+    /** Record actual provider usage reported by the browser as operational quota usage. */
+    public function routeUsageReport(WP_REST_Request $request)
+    {
+        $sessionId = sanitize_text_field((string) $request->get_param('session_id'));
+        $agentId = sanitize_key((string) $request->get_param('agent_id'));
+        $postId = max(0, (int) $request->get_param('post_id'));
+        $userKey = $this->resolveUserKey(sanitize_text_field((string) $request->get_param('anon_id')));
+        $sessionTicket = sanitize_text_field((string) $request->get_param('session_ticket'));
+        $session = $this->usage->validateSession($sessionId, $sessionTicket, $userKey, $agentId, $postId);
+        if (!$session) {
+            return new WP_Error('usage_session_forbidden', __('This conversation session is invalid or belongs to another user.', 'agentos'), ['status' => 403]);
+        }
+
+        $events = $request->get_param('events');
+        if (!is_array($events) || count($events) > 100) {
+            return new WP_Error('bad_usage_batch', __('A batch of up to 100 provider usage events is required.', 'agentos'), ['status' => 400]);
+        }
+        $validated = [];
+        foreach ($events as $event) {
+            if (!is_array($event)) {
+                return new WP_Error('bad_usage_event', __('Each usage event must be an object.', 'agentos'), ['status' => 400]);
+            }
+            $eventId = sanitize_text_field((string) ($event['event_id'] ?? ''));
+            $category = sanitize_key((string) ($event['category'] ?? ''));
+            $usage = $event['usage'] ?? null;
+            if ($eventId === '' || strlen($eventId) > 190 || !in_array($category, ['realtime', 'transcription'], true) || !is_array($usage)) {
+                return new WP_Error('bad_usage_event', __('A provider event ID, supported category, and usage object are required.', 'agentos'), ['status' => 400]);
+            }
+            if ($category === 'realtime') {
+                if (!array_key_exists('input_tokens', $usage) || !array_key_exists('output_tokens', $usage)) {
+                    return new WP_Error('bad_usage_event', __('Realtime usage must include provider input and output token counts.', 'agentos'), ['status' => 400]);
+                }
+                $cleanUsage = [
+                    'input_tokens' => max(0, (int) $usage['input_tokens']),
+                    'output_tokens' => max(0, (int) $usage['output_tokens']),
+                    'total_tokens' => max(0, (int) ($usage['total_tokens'] ?? ((int) $usage['input_tokens'] + (int) $usage['output_tokens']))),
+                ];
+                $cleanUsage['details'] = $this->cleanRealtimeUsageDetails($usage['details'] ?? []);
+            } elseif (($usage['type'] ?? '') === 'duration' && array_key_exists('seconds', $usage)) {
+                $cleanUsage = ['total_tokens' => 0, 'transcription_seconds' => max(0, (float) $usage['seconds'])];
+            } elseif (($usage['type'] ?? '') === 'tokens' && array_key_exists('input_tokens', $usage)) {
+                $cleanUsage = [
+                    'input_tokens' => max(0, (int) $usage['input_tokens']),
+                    'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+                    'total_tokens' => max(0, (int) ($usage['total_tokens'] ?? ((int) $usage['input_tokens'] + (int) ($usage['output_tokens'] ?? 0)))),
+                ];
+            } else {
+                return new WP_Error('bad_usage_event', __('Transcription usage must report actual provider tokens or duration.', 'agentos'), ['status' => 400]);
+            }
+            $validated[] = [
+                'event_id' => $eventId,
+                'category' => $category,
+                'usage' => $cleanUsage,
+                'response_status' => sanitize_key((string) ($event['response_status'] ?? '')),
+                'details' => $category === 'realtime' ? ($cleanUsage['details'] ?? []) : [],
+            ];
+        }
+
+        $agent = $this->agents->get($agentId);
+        if (!$agent) {
+            return new WP_Error('invalid_agent', __('Agent not found.', 'agentos'), ['status' => 404]);
+        }
+        $lockScope = $userKey !== '' ? 'user:' . $userKey : 'guest:' . $agentId . ':' . $postId;
+        $result = $this->usage->withUsageLock($lockScope, function () use ($validated, $sessionId, $userKey, $agent) {
+            foreach ($validated as $event) {
+                $stored = $this->usage->recordEvent(
+                    $sessionId,
+                    $event['event_id'],
+                    $event['category'],
+                    $event['usage'],
+                    'browser_reported',
+                    [
+                        'response_status' => $event['response_status'],
+                        'reported_by' => 'browser',
+                        'provider_usage_details' => $event['details'],
+                    ]
+                );
+                if (!$stored) {
+                    return new WP_Error('usage_event_failed', __('Unable to save the provider usage batch. Retry the same batch safely.', 'agentos'), ['status' => 503]);
+                }
+            }
+            $decision = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'realtime']);
+            return [
+                'allowed' => !empty($decision['allowed']),
+                'message' => $decision['message'] ?? '',
+                'reason' => $decision['reason'] ?? '',
+                'remaining' => $decision['remaining'] ?? [],
+                'warnings' => $decision['warnings'] ?? [],
+                'realtime_budget' => $this->realtimeTokenBudget($decision, $agent),
+                'session_cap' => (int) ($decision['session_cap'] ?? 0),
+                'usage_source' => 'browser_reported',
+                'usage' => $this->usage->sessionUsage($sessionId),
+            ];
+        });
+        if ($result === false) {
+            return new WP_Error('usage_busy', __('Usage is being updated. Retry the same batch shortly.', 'agentos'), ['status' => 503]);
+        }
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        return $result;
+    }
+
+    private function cleanRealtimeUsageDetails($details): array
+    {
+        if (!is_array($details)) {
+            return [];
+        }
+        $allowed = ['input_token_details', 'output_token_details', 'input_tokens_details', 'output_tokens_details'];
+        $clean = [];
+        foreach ($allowed as $group) {
+            if (empty($details[$group]) || !is_array($details[$group])) {
+                continue;
+            }
+            $clean[$group] = $this->cleanRealtimeUsageDetailValues($details[$group]);
+            if (!$clean[$group]) {
+                unset($clean[$group]);
+            }
+        }
+        return $clean;
+    }
+
+    private function cleanRealtimeUsageDetailValues(array $values, int $depth = 0): array
+    {
+        if ($depth >= 3) {
+            return [];
+        }
+        $clean = [];
+        foreach (array_slice($values, 0, 20, true) as $name => $value) {
+            $key = sanitize_key((string) $name);
+            if ($key === '') {
+                continue;
+            }
+            if (is_int($value) || is_float($value)) {
+                $clean[$key] = max(0, (int) $value);
+            } elseif (is_array($value)) {
+                $nested = $this->cleanRealtimeUsageDetailValues($value, $depth + 1);
+                if ($nested) {
+                    $clean[$key] = $nested;
+                }
+            }
+        }
+        return $clean;
     }
 
     private function extractIntegrationApiToken(WP_REST_Request $request): string

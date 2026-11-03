@@ -67,6 +67,10 @@ foreach ($plans as $slug => $plan) {
         <td>
           <div><?php printf(esc_html__('Realtime: %s tokens', 'agentos'), number_format_i18n((int) $usage_summary['tokens_realtime'])); ?></div>
           <div><?php printf(esc_html__('Text: %s tokens', 'agentos'), number_format_i18n((int) $usage_summary['tokens_text'])); ?></div>
+          <div><?php printf(esc_html__('Audio transcription: %s tokens · %s seconds', 'agentos'), number_format_i18n((int) ($usage_summary['tokens_transcription'] ?? 0)), number_format_i18n((float) ($usage_summary['transcription_seconds'] ?? 0), 1)); ?></div>
+          <div><?php printf(esc_html__('Automatic analysis: %s tokens', 'agentos'), number_format_i18n((int) ($usage_summary['tokens_analysis'] ?? 0))); ?></div>
+          <div><?php printf(esc_html__('Legacy estimated usage: %s tokens', 'agentos'), number_format_i18n((int) ($usage_summary['legacy_estimated_tokens'] ?? 0))); ?></div>
+          <div><?php printf(esc_html__('Browser reported (operational quota; not server verified): %s tokens', 'agentos'), number_format_i18n((int) ($usage_summary['browser_reported_tokens'] ?? $usage_summary['browser_unverified_tokens'] ?? 0))); ?></div>
           <div><strong><?php printf(esc_html__('Total: %s tokens across %s sessions', 'agentos'), number_format_i18n((int) $usage_summary['tokens_total']), number_format_i18n((int) $usage_summary['sessions'])); ?></strong></div>
         </td>
       </tr>
@@ -115,6 +119,10 @@ foreach ($plans as $slug => $plan) {
             <td>
               <div><?php printf(esc_html__('Realtime: %s', 'agentos'), number_format_i18n((int) $usage['tokens_realtime'])); ?></div>
               <div><?php printf(esc_html__('Text: %s', 'agentos'), number_format_i18n((int) $usage['tokens_text'])); ?></div>
+              <div><?php printf(esc_html__('Audio transcription: %s tokens · %s seconds', 'agentos'), number_format_i18n((int) ($usage['tokens_transcription'] ?? 0)), number_format_i18n((float) ($usage['transcription_seconds'] ?? 0), 1)); ?></div>
+              <div><?php printf(esc_html__('Automatic analysis: %s', 'agentos'), number_format_i18n((int) ($usage['tokens_analysis'] ?? 0))); ?></div>
+              <div><?php printf(esc_html__('Legacy estimated: %s', 'agentos'), number_format_i18n((int) ($usage['legacy_estimated_tokens'] ?? 0))); ?></div>
+              <div><?php printf(esc_html__('Browser reported (operational quota; not server verified): %s', 'agentos'), number_format_i18n((int) ($usage['browser_reported_tokens'] ?? $usage['browser_unverified_tokens'] ?? 0))); ?></div>
               <div><strong><?php printf(esc_html__('Total: %s', 'agentos'), number_format_i18n((int) $usage['tokens_total'])); ?></strong></div>
               <div><?php printf(esc_html__('Sessions: %s', 'agentos'), number_format_i18n((int) $usage['sessions'])); ?></div>
             </td>
@@ -179,6 +187,12 @@ foreach ($plans as $slug => $plan) {
             <td>
               <div><?php printf(esc_html__('Realtime: %s', 'agentos'), number_format_i18n((int) $entry['tokens_realtime'])); ?></div>
               <div><?php printf(esc_html__('Text: %s', 'agentos'), number_format_i18n((int) $entry['tokens_text'])); ?></div>
+              <div><?php printf(esc_html__('Audio transcription: %s tokens · %s seconds', 'agentos'), number_format_i18n((int) ($entry['tokens_transcription'] ?? 0)), number_format_i18n((float) ($entry['transcription_seconds'] ?? 0), 1)); ?></div>
+              <div><?php printf(esc_html__('Automatic analysis: %s', 'agentos'), number_format_i18n((int) ($entry['tokens_analysis'] ?? 0))); ?></div>
+              <div><?php printf(esc_html__('Legacy estimated: %s', 'agentos'), number_format_i18n((int) ($entry['legacy_estimated_tokens'] ?? 0))); ?></div>
+              <div><?php printf(esc_html__('Browser reported (operational quota; not server verified): %s', 'agentos'), number_format_i18n((int) ($entry['browser_reported_tokens'] ?? $entry['browser_unverified_tokens'] ?? 0))); ?></div>
+              <div><small><?php echo esc_html(str_replace('_', ' ', (string) ($entry['usage_source'] ?? 'unknown'))); ?></small></div>
+              <?php if (!empty($entry['usage_report_incomplete'])) : ?><div><strong><?php esc_html_e('Final provider usage was not confirmed', 'agentos'); ?></strong></div><?php endif; ?>
               <div><strong><?php printf(esc_html__('Total: %s', 'agentos'), number_format_i18n((int) $entry['tokens_total'])); ?></strong></div>
             </td>
             <td><?php echo esc_html(gmdate('H:i:s', max(0, (int) $entry['duration_seconds']))); ?></td>

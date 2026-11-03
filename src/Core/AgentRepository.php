@@ -21,6 +21,7 @@ class AgentRepository
             'voice_noise_reduction' => '',
             'speech_language_hint' => '',
             'transcription_hint' => '',
+            'transcription_delay' => '',
             'context_params' => [],
             'show_post_image' => false,
             'show_post_title' => false,
@@ -35,6 +36,10 @@ class AgentRepository
             'analysis_auto_run' => false,
             'require_subscription' => false,
             'session_token_cap' => 0,
+            'mcp_tools' => [],
+            'mcp_approval' => [],
+            'mcp_instructions' => '',
+            'mcp_connection_instructions' => [],
         ];
     }
 
@@ -154,6 +159,8 @@ class AgentRepository
         $languageHint = sanitize_key($input['speech_language_hint'] ?? '');
         $agent['speech_language_hint'] = in_array($languageHint, ['', 'en', 'pt'], true) ? $languageHint : '';
         $agent['transcription_hint'] = sanitize_textarea_field($input['transcription_hint'] ?? '');
+        $delay = sanitize_key($input['transcription_delay'] ?? '');
+        $agent['transcription_delay'] = in_array($delay, ['', 'minimal', 'low', 'medium', 'high', 'xhigh'], true) ? $delay : '';
 
         $contextParams = $input['context_params'] ?? [];
         if (is_string($contextParams)) {
@@ -180,6 +187,26 @@ class AgentRepository
         $agent['session_token_cap'] = isset($input['session_token_cap']) ? intval($input['session_token_cap']) : 0;
         if ($agent['session_token_cap'] < 0) {
             $agent['session_token_cap'] = 0;
+        }
+
+        $agent['mcp_instructions'] = sanitize_textarea_field($input['mcp_instructions'] ?? '');
+        $agent['mcp_connection_instructions'] = [];
+        foreach ((array) ($input['mcp_connection_instructions'] ?? []) as $connectionId => $instructions) {
+            $connectionId = sanitize_text_field((string) $connectionId);
+            if ($connectionId !== '' && is_string($instructions)) {
+                $agent['mcp_connection_instructions'][$connectionId] = sanitize_textarea_field($instructions);
+            }
+        }
+        $agent['mcp_tools'] = [];
+        $agent['mcp_approval'] = [];
+        foreach ((array) ($input['mcp_tools'] ?? []) as $connectionId => $toolNames) {
+            $connectionId = sanitize_text_field((string) $connectionId);
+            if (!$connectionId || !is_array($toolNames)) {
+                continue;
+            }
+            $agent['mcp_tools'][$connectionId] = array_values(array_unique(array_filter(array_map('sanitize_text_field', $toolNames))));
+            $approval = sanitize_key($input['mcp_approval'][$connectionId] ?? 'confirm');
+            $agent['mcp_approval'][$connectionId] = $approval === 'auto' ? 'auto' : 'confirm';
         }
 
         $publicPostTypes = get_post_types(['public' => true], 'names');
@@ -236,6 +263,7 @@ class AgentRepository
             'voice_noise_reduction' => sanitize_key($agent['voice_noise_reduction'] ?? ''),
             'speech_language_hint' => sanitize_key($agent['speech_language_hint'] ?? ''),
             'transcription_hint' => sanitize_textarea_field($agent['transcription_hint'] ?? ''),
+            'transcription_delay' => sanitize_key($agent['transcription_delay'] ?? ''),
             'mode' => $agent['default_mode'] ?? 'voice',
             'show_transcript' => !empty($agent['show_transcript']),
             'analysis_enabled' => !empty($agent['analysis_enabled']),

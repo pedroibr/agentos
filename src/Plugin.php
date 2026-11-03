@@ -17,6 +17,8 @@ use AgentOS\Rest\RestController;
 use AgentOS\Subscriptions\SubscriptionRepository;
 use AgentOS\Subscriptions\UserSubscriptionRepository;
 use AgentOS\Subscriptions\UsageLimiter;
+use AgentOS\Mcp\ConnectionRepository;
+use AgentOS\Mcp\Client;
 
 class Plugin
 {
@@ -48,7 +50,9 @@ class Plugin
         $this->subscriptions = new SubscriptionRepository();
         $this->userSubscriptions = new UserSubscriptionRepository();
         $this->usageLimiter = new UsageLimiter($this->subscriptions, $this->userSubscriptions, $this->usage);
-        $this->analyzer = new Analyzer($this->settings, $this->agents, $this->transcripts);
+        $this->analyzer = new Analyzer($this->settings, $this->agents, $this->transcripts, $this->usage, $this->usageLimiter);
+        $mcpConnections = new ConnectionRepository();
+        $mcpClient = new Client($mcpConnections);
 
         $this->admin = new AdminController(
             $this->settings,
@@ -58,7 +62,9 @@ class Plugin
             $this->analyzer,
             $this->subscriptions,
             $this->userSubscriptions,
-            $this->usage
+            $this->usage,
+            $mcpConnections,
+            $mcpClient
         );
         $this->shortcode = new Shortcode($this->agents, $this->settings, $this->assets, $templateDir);
         $this->rest = new RestController(
@@ -83,6 +89,9 @@ class Plugin
         add_action('admin_enqueue_scripts', [$this->admin, 'enqueueAssets']);
         add_action('admin_post_agentos_save_agent', [$this->admin, 'handleSave']);
         add_action('admin_post_agentos_delete_agent', [$this->admin, 'handleDelete']);
+        add_action('admin_post_agentos_mcp_save', [$this->admin, 'handleMcpSave']);
+        add_action('admin_post_agentos_mcp_delete', [$this->admin, 'handleMcpDelete']);
+        add_action('admin_post_agentos_mcp_discover', [$this->admin, 'handleMcpDiscover']);
         add_action('admin_post_agentos_run_analysis', [$this->admin, 'handleAnalysisRequest']);
         add_action('admin_post_agentos_save_subscription', [$this->admin, 'handleSubscriptionSave']);
         add_action('admin_post_agentos_delete_subscription', [$this->admin, 'handleSubscriptionDelete']);

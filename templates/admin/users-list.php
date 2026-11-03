@@ -118,6 +118,8 @@ $addUrl = add_query_arg(
               <td>
                 <div><?php printf(esc_html__('Realtime: %s', 'agentos'), number_format_i18n((int) $user['tokens_realtime'])); ?></div>
                 <div><?php printf(esc_html__('Text: %s', 'agentos'), number_format_i18n((int) $user['tokens_text'])); ?></div>
+                <div><?php printf(esc_html__('ASR: %s · Analysis: %s', 'agentos'), number_format_i18n((int) ($user['tokens_transcription'] ?? 0)), number_format_i18n((int) ($user['tokens_analysis'] ?? 0))); ?></div>
+                <div><?php printf(esc_html__('Legacy estimate: %s · Browser reported (operational): %s', 'agentos'), number_format_i18n((int) ($user['legacy_estimated_tokens'] ?? 0)), number_format_i18n((int) ($user['browser_reported_tokens'] ?? $user['browser_unverified_tokens'] ?? 0))); ?></div>
                 <div><strong><?php printf(esc_html__('Total: %s', 'agentos'), number_format_i18n((int) $user['tokens_total'])); ?></strong></div>
               </td>
               <td>

@@ -1085,3 +1085,14 @@
     scroll-behavior: auto;
   }
 }
+.agentos-tool-approval {
+  padding: 16px;
+  margin: 12px;
+  border: var(--agentos-border, 1px solid #ddd);
+  border-radius: var(--agentos-radius, 12px);
+  background: var(--agentos-surface, #fff);
+  color: var(--agentos-text, #222);
+}
+.agentos-tool-approval p { margin: 6px 0; }
+.agentos-tool-approval pre { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.agentos-tool-approval > div { display: flex; flex-wrap: wrap; gap: 8px; }

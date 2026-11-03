@@ -24,9 +24,17 @@ class Registrar
         );
 
         wp_register_script(
+            'agentos-tools',
+            plugins_url('assets/agentos-tools.js', Config::pluginFile()),
+            [],
+            file_exists(Config::pluginDir() . 'assets/agentos-tools.js') ? (string) filemtime(Config::pluginDir() . 'assets/agentos-tools.js') : Config::VERSION,
+            true
+        );
+
+        wp_register_script(
             'agentos-embed',
             plugins_url('assets/agentos-embed.js', Config::pluginFile()),
-            ['agentos-realtime'],
+            ['agentos-realtime', 'agentos-tools'],
             $scriptVersion,
             true
         );

@@ -3,8 +3,11 @@
 namespace AgentOS\Analysis;
 
 use AgentOS\Core\AgentRepository;
+use AgentOS\Core\Config;
 use AgentOS\Core\Settings;
 use AgentOS\Database\TranscriptRepository;
+use AgentOS\Database\UsageRepository;
+use AgentOS\Subscriptions\UsageLimiter;
 use WP_Error;
 
 class Analyzer
@@ -19,12 +22,16 @@ class Analyzer
     private Settings $settings;
     private AgentRepository $agents;
     private TranscriptRepository $transcripts;
+    private UsageRepository $usage;
+    private UsageLimiter $limiter;
 
-    public function __construct(Settings $settings, AgentRepository $agents, TranscriptRepository $transcripts)
+    public function __construct(Settings $settings, AgentRepository $agents, TranscriptRepository $transcripts, UsageRepository $usage, UsageLimiter $limiter)
     {
         $this->settings = $settings;
         $this->agents = $agents;
         $this->transcripts = $transcripts;
+        $this->usage = $usage;
+        $this->limiter = $limiter;
     }
 
     public function register(): void
@@ -145,9 +152,137 @@ class Analyzer
             ],
         ];
 
-        $response = $this->callOpenAi($apiKey, $model, $messages);
+        $sessionId = sanitize_text_field((string) ($record['session_id'] ?? ''));
+        $usageSession = $sessionId !== '' ? $this->usage->getSession($sessionId) : null;
+        if (!$usageSession && $sessionId !== '') {
+            $usageSession = $this->usage->linkLegacyTranscript($record);
+        }
+        if (!$usageSession
+            || (string) ($usageSession['agent_id'] ?? '') !== (string) ($record['agent_id'] ?? '')
+            || (int) ($usageSession['post_id'] ?? 0) !== (int) ($record['post_id'] ?? 0)
+        ) {
+            $this->transcripts->updateAnalysis($transcriptId, [
+                'analysis_status' => 'failed',
+                'analysis_error' => __('Analysis was not run because its usage session could not be linked safely.', 'agentos'),
+            ]);
+            return;
+        }
+        $userKey = sanitize_text_field((string) ($usageSession['user_key'] ?? ''));
+        $decision = $this->limiter->evaluate($userKey, $agent, ['session_id' => $sessionId, 'mode' => 'analysis']);
+        if (empty($decision['allowed'])) {
+            $this->transcripts->updateAnalysis($transcriptId, [
+                'analysis_status' => 'failed',
+                'analysis_error' => __('Analysis was not run because the conversation quota or subscription is no longer available.', 'agentos'),
+            ]);
+            return;
+        }
+
+        $plan = is_array($decision['plan'] ?? null) ? $decision['plan'] : [];
+        $limits = $plan['limits'] ?? [];
+        $strict = (int) ($agent['session_token_cap'] ?? 0) > 0
+            || (int) ($decision['session_cap'] ?? 0) > 0
+            || (!empty($plan['block_on_overage']) && (int) ($limits['text_tokens'] ?? 0) > 0);
+        $payload = ['model' => $model, 'input' => $messages];
+        $reservationId = '';
+        if ($strict) {
+            $inputTokens = $this->countInputTokens($apiKey, $payload);
+            if (is_wp_error($inputTokens)) {
+                $this->transcripts->updateAnalysis($transcriptId, [
+                    'analysis_status' => 'failed',
+                    'analysis_error' => __('Analysis was not run because its exact input size could not be checked.', 'agentos'),
+                ]);
+                return;
+            }
+            $reservationId = wp_generate_password(48, false, false);
+            $lockScope = $userKey !== '' ? 'user:' . $userKey : 'guest:' . sanitize_key((string) ($agent['slug'] ?? '')) . ':' . (int) ($record['post_id'] ?? 0);
+            $outputTokens = $this->usage->withUsageLock($lockScope, function () use ($userKey, $record, $usageSession, $reservationId, $inputTokens, $agent) {
+                $freshAgent = $this->agents->get((string) $record['agent_id']) ?: $agent;
+                $fresh = $this->limiter->evaluate($userKey, $freshAgent, ['session_id' => (string) $record['session_id'], 'mode' => 'analysis']);
+                if (empty($fresh['allowed'])) {
+                    return false;
+                }
+                $freshPlan = is_array($fresh['plan'] ?? null) ? $fresh['plan'] : [];
+                $freshLimits = $freshPlan['limits'] ?? [];
+                $available = [];
+                if (!empty($freshPlan['block_on_overage']) && (int) ($freshLimits['text_tokens'] ?? 0) > 0) {
+                    $available[] = max(0, (int) ($fresh['remaining']['text_tokens'] ?? 0));
+                }
+                if ((int) ($fresh['session_cap'] ?? 0) > 0) {
+                    $available[] = max(0, (int) ($fresh['remaining']['session_tokens'] ?? 0));
+                }
+                $budget = $available ? min($available) : 0;
+                $outputLimit = min(2048, $budget - (int) $inputTokens);
+                if ($outputLimit < Config::RESPONSES_MIN_OUTPUT_TOKENS) {
+                    return false;
+                }
+                $reserved = $this->usage->reserveBudget(
+                    $reservationId,
+                    (string) $record['session_id'],
+                    $userKey,
+                    (string) ($fresh['subscription_slug'] ?? $usageSession['subscription_slug'] ?? ''),
+                    'text',
+                    (int) $inputTokens + (int) $outputLimit,
+                    max(1, (int) ($freshPlan['period_hours'] ?? 24))
+                );
+                return $reserved ? $outputLimit : false;
+            });
+            if (!is_int($outputTokens) || $outputTokens < 1) {
+                $this->transcripts->updateAnalysis($transcriptId, [
+                    'analysis_status' => 'failed',
+                    'analysis_error' => __('Analysis was not run because its remaining token budget could not reserve at least 16 output tokens.', 'agentos'),
+                ]);
+                return;
+            }
+            $payload['max_output_tokens'] = $outputTokens;
+        }
+
+        $response = $this->callOpenAi($apiKey, $model, $messages, $strict ? $payload['max_output_tokens'] : null);
         if (is_wp_error($response)) {
+            if ($reservationId !== '') {
+                $data = $response->get_error_data();
+                $status = is_array($data) ? (int) ($data['status'] ?? 0) : 0;
+                $this->usage->releaseBudget($reservationId, $status === 0 || $status >= 500 || in_array($response->get_error_code(), ['http_request_failed', 'http_request_timeout'], true));
+            }
             $this->handleFailure($transcriptId, $attempt, $response);
+            return;
+        }
+
+        $responseUsage = is_array($response['usage'] ?? null) ? $response['usage'] : null;
+        $responseId = sanitize_text_field((string) ($response['id'] ?? ''));
+        if (!$responseUsage || $responseId === '') {
+            if ($reservationId !== '') {
+                $this->usage->releaseBudget($reservationId, true);
+            }
+            $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            $this->transcripts->updateAnalysis($transcriptId, [
+                'analysis_status' => 'failed',
+                'analysis_error' => __('Analysis usage could not be confirmed, so the result was not saved.', 'agentos'),
+            ]);
+            return;
+        }
+        $usageData = [
+            'input_tokens' => max(0, (int) ($responseUsage['input_tokens'] ?? 0)),
+            'output_tokens' => max(0, (int) ($responseUsage['output_tokens'] ?? 0)),
+            'total_tokens' => max(0, (int) ($responseUsage['total_tokens'] ?? ((int) ($responseUsage['input_tokens'] ?? 0) + (int) ($responseUsage['output_tokens'] ?? 0)))),
+        ];
+        $usageMetadata = [
+            'model' => $model,
+            'status' => sanitize_key((string) ($response['status'] ?? 'completed')),
+            'cached_input_tokens' => max(0, (int) ($responseUsage['input_tokens_details']['cached_tokens'] ?? 0)),
+            'transcript_id' => $transcriptId,
+        ];
+        $savedUsage = $reservationId !== ''
+            ? $this->usage->settleBudget($reservationId, $sessionId, $responseId, 'analysis', $usageData, 'server', $usageMetadata)
+            : $this->usage->recordEvent($sessionId, $responseId, 'analysis', $usageData, 'server', $usageMetadata);
+        if (!$savedUsage) {
+            if ($reservationId !== '') {
+                $this->usage->releaseBudget($reservationId, true);
+            }
+            $this->usage->updateBySession($sessionId, ['status' => 'usage_error']);
+            $this->transcripts->updateAnalysis($transcriptId, [
+                'analysis_status' => 'failed',
+                'analysis_error' => __('Analysis usage could not be saved, so the result was not saved.', 'agentos'),
+            ]);
             return;
         }
 
@@ -205,12 +340,33 @@ class Analyzer
         wp_schedule_single_event(time() + $delay, self::HOOK, [$transcriptId]);
     }
 
-    private function callOpenAi(string $apiKey, string $model, array $messages)
+    private function countInputTokens(string $apiKey, array $payload)
+    {
+        $response = wp_remote_post('https://api.openai.com/v1/responses/input_tokens', [
+            'headers' => ['Authorization' => 'Bearer ' . $apiKey, 'Content-Type' => 'application/json'],
+            'body' => wp_json_encode($payload),
+            'timeout' => 25,
+        ]);
+        if (is_wp_error($response)) {
+            return new WP_Error('analysis_preflight_failed', __('Unable to verify the analysis input size.', 'agentos'), ['status' => 503]);
+        }
+        $code = wp_remote_retrieve_response_code($response);
+        $json = json_decode(wp_remote_retrieve_body($response), true);
+        if ($code < 200 || $code >= 300 || !is_array($json) || !is_numeric($json['input_tokens'] ?? null)) {
+            return new WP_Error('analysis_preflight_failed', __('The analysis input size could not be verified.', 'agentos'), ['status' => 503]);
+        }
+        return max(0, (int) $json['input_tokens']);
+    }
+
+    private function callOpenAi(string $apiKey, string $model, array $messages, ?int $maxOutputTokens = null)
     {
         $payload = [
             'model' => $model ?: self::DEFAULT_MODEL,
             'input' => $messages,
         ];
+        if ($maxOutputTokens !== null && $maxOutputTokens > 0) {
+            $payload['max_output_tokens'] = $maxOutputTokens;
+        }
 
         $response = wp_remote_post(
             'https://api.openai.com/v1/responses',

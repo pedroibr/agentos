@@ -6,6 +6,7 @@
  * @var array $agent
  * @var string $agent_slug
  * @var array $post_types
+ * @var array $mcp_connections
  */
 if (!defined('ABSPATH')) {
     exit;
@@ -108,6 +109,15 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
             <label for="agentos-transcription-hint"><?php esc_html_e('Transcription hint', 'agentos'); ?></label><br>
             <textarea id="agentos-transcription-hint" name="agent[transcription_hint]" rows="3" class="large-text"><?php echo esc_textarea($agent['transcription_hint'] ?? ''); ?></textarea>
             <p class="description"><?php esc_html_e('Optional context for the transcription model, such as keywords, lesson topic, product names, or expected accents. Prefer short keywords instead of full sentences. Default: empty.', 'agentos'); ?></p>
+
+            <label for="agentos-transcription-delay"><?php esc_html_e('Transcription delay', 'agentos'); ?></label><br>
+            <select id="agentos-transcription-delay" name="agent[transcription_delay]">
+              <option value="" <?php selected($agent['transcription_delay'] ?? '', ''); ?>><?php esc_html_e('Use model default', 'agentos'); ?></option>
+              <?php foreach (['minimal', 'low', 'medium', 'high', 'xhigh'] as $delay) : ?>
+                <option value="<?php echo esc_attr($delay); ?>" <?php selected($agent['transcription_delay'] ?? '', $delay); ?>><?php echo esc_html($delay); ?></option>
+              <?php endforeach; ?>
+            </select>
+            <p class="description"><?php esc_html_e('Higher levels give speech transcription more context before displaying text and may improve accuracy. These are model-defined levels, not milliseconds. This does not change when the agent decides to reply. Start a new voice session after saving.', 'agentos'); ?></p>
           </fieldset>
         </td>
       </tr>
@@ -232,6 +242,40 @@ $title = $is_edit ? __('Edit Agent', 'agentos') : __('Add New Agent', 'agentos')
     <noscript>
       <p><em><?php esc_html_e('Enable JavaScript in your browser to configure field mappings.', 'agentos'); ?></em></p>
     </noscript>
+
+    <h2><?php esc_html_e('MCP Tools', 'agentos'); ?></h2>
+    <p><?php esc_html_e('Connections do not grant access by themselves. Select each tool this agent may call. An empty selection enables no MCP tools.', 'agentos'); ?></p>
+    <p><?php esc_html_e('Selected tools run with the connection’s account for everyone who can use this agent. The connected service must enforce any customer-specific data access.', 'agentos'); ?></p>
+    <?php foreach (($mcp_connections ?? []) as $connection) :
+      $connectionId = (string) $connection['id'];
+      $selectedTools = (array) ($agent['mcp_tools'][$connectionId] ?? []);
+      $connectionInstructions = (string) ($agent['mcp_connection_instructions'][$connectionId] ?? '');
+      ?>
+      <fieldset style="border:1px solid #c3c4c7;padding:12px;margin:12px 0;max-width:800px">
+        <legend><strong><?php echo esc_html($connection['label']); ?></strong></legend>
+        <?php if (empty($connection['enabled'])) : ?><p><?php esc_html_e('This connection is disabled. Selections are retained but cannot run until it is enabled.', 'agentos'); ?></p><?php endif; ?>
+        <?php if (empty($connection['tools'])) : ?>
+          <p><?php esc_html_e('No tools discovered yet. Configure and discover tools under AgentOS → MCP Connections.', 'agentos'); ?></p>
+        <?php else : foreach ($connection['tools'] as $tool) : ?>
+          <label style="display:block;margin:6px 0">
+            <input type="checkbox" name="agent[mcp_tools][<?php echo esc_attr($connectionId); ?>][]" value="<?php echo esc_attr($tool['name']); ?>" <?php checked(in_array($tool['name'], $selectedTools, true)); ?>>
+            <code><?php echo esc_html($tool['name']); ?></code> <?php echo esc_html($tool['description'] ?? ''); ?>
+          </label>
+        <?php endforeach; endif; ?>
+        <label><?php esc_html_e('Execution policy', 'agentos'); ?>
+          <select name="agent[mcp_approval][<?php echo esc_attr($connectionId); ?>]">
+            <option value="confirm" <?php selected(($agent['mcp_approval'][$connectionId] ?? 'confirm'), 'confirm'); ?>><?php esc_html_e('Ask for approval each time', 'agentos'); ?></option>
+            <option value="auto" <?php selected(($agent['mcp_approval'][$connectionId] ?? 'confirm'), 'auto'); ?>><?php esc_html_e('Run automatically', 'agentos'); ?></option>
+          </select>
+        </label>
+        <p><label for="agentos-mcp-instructions-<?php echo esc_attr($connectionId); ?>"><strong><?php esc_html_e('Instructions for this connection', 'agentos'); ?></strong></label></p>
+        <textarea id="agentos-mcp-instructions-<?php echo esc_attr($connectionId); ?>" name="agent[mcp_connection_instructions][<?php echo esc_attr($connectionId); ?>]" rows="4" class="large-text"><?php echo esc_textarea($connectionInstructions); ?></textarea>
+        <p class="description"><?php esc_html_e('Applies only when at least one tool from this connection is selected. Keep service-specific workflow and safety guidance here.', 'agentos'); ?></p>
+      </fieldset>
+    <?php endforeach; ?>
+    <p><label for="agentos-mcp-instructions"><strong><?php esc_html_e('Legacy global MCP instructions', 'agentos'); ?></strong></label></p>
+    <textarea id="agentos-mcp-instructions" name="agent[mcp_instructions]" rows="3" class="large-text"><?php echo esc_textarea($agent['mcp_instructions'] ?? ''); ?></textarea>
+    <p class="description"><?php esc_html_e('Existing extra MCP instructions are preserved and apply globally to selected MCP tools. Move service-specific guidance to that connection above when convenient.', 'agentos'); ?></p>
 
     <?php submit_button($is_edit ? __('Update Agent', 'agentos') : __('Create Agent', 'agentos')); ?>
   </form>

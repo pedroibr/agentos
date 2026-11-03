@@ -10,6 +10,9 @@ use AgentOS\Database\TranscriptRepository;
 use AgentOS\Database\UsageRepository;
 use AgentOS\Subscriptions\SubscriptionRepository;
 use AgentOS\Subscriptions\UserSubscriptionRepository;
+use AgentOS\Mcp\ConnectionRepository;
+use AgentOS\Mcp\Client;
+use AgentOS\Mcp\Diagnostics;
 
 class AdminController
 {
@@ -21,6 +24,9 @@ class AdminController
     private SubscriptionRepository $subscriptions;
     private UserSubscriptionRepository $userSubscriptions;
     private UsageRepository $usage;
+    private ConnectionRepository $mcpConnections;
+    private Client $mcpClient;
+    private Diagnostics $mcpDiagnostics;
 
     public function __construct(
         Settings $settings,
@@ -30,7 +36,9 @@ class AdminController
         Analyzer $analyzer,
         SubscriptionRepository $subscriptions,
         UserSubscriptionRepository $userSubscriptions,
-        UsageRepository $usage
+        UsageRepository $usage,
+        ConnectionRepository $mcpConnections,
+        Client $mcpClient
     ) {
         $this->settings = $settings;
         $this->agents = $agents;
@@ -40,6 +48,9 @@ class AdminController
         $this->subscriptions = $subscriptions;
         $this->userSubscriptions = $userSubscriptions;
         $this->usage = $usage;
+        $this->mcpConnections = $mcpConnections;
+        $this->mcpClient = $mcpClient;
+        $this->mcpDiagnostics = new Diagnostics();
     }
 
     public function registerMenu(): void
@@ -54,6 +65,15 @@ class AdminController
             [$this, 'renderAgentsPage'],
             'dashicons-format-chat',
             58
+        );
+
+        add_submenu_page(
+            'agentos',
+            __('MCP Connections', 'agentos'),
+            __('MCP Connections', 'agentos'),
+            $capability,
+            'agentos-mcp',
+            [$this, 'renderMcpPage']
         );
 
         add_submenu_page(
@@ -100,6 +120,69 @@ class AdminController
             'agentos-settings',
             [$this, 'renderSettingsPage']
         );
+    }
+
+    public function renderMcpPage(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        $id = isset($_GET['connection']) ? sanitize_text_field(wp_unslash($_GET['connection'])) : '';
+        $record = $id ? $this->mcpConnections->get($id) : null;
+        $this->view->render('admin/mcp-connections', [
+            'connections' => $this->mcpConnections->all(),
+            'connection' => $record ?: ['id' => '', 'label' => '', 'url' => '', 'auth' => 'none', 'enabled' => false, 'has_token' => false, 'tools' => []],
+            'message' => isset($_GET['message']) ? sanitize_key($_GET['message']) : '',
+            'diagnostics' => $this->mcpDiagnostics->recent(),
+        ]);
+    }
+
+    public function handleMcpSave(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+        check_admin_referer('agentos_mcp_save');
+        $input = isset($_POST['connection']) ? (array) wp_unslash($_POST['connection']) : [];
+        try {
+            $this->mcpConnections->save($input, sanitize_text_field($input['id'] ?? ''), !empty($input['clear_token']));
+            $message = 'saved';
+        } catch (\Throwable $error) {
+            $message = 'invalid';
+        }
+        wp_safe_redirect(add_query_arg(['page' => 'agentos-mcp', 'message' => $message], admin_url('admin.php')));
+        exit;
+    }
+
+    public function handleMcpDelete(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+        check_admin_referer('agentos_mcp_delete');
+        $this->mcpConnections->delete(isset($_GET['connection']) ? sanitize_text_field(wp_unslash($_GET['connection'])) : '');
+        wp_safe_redirect(add_query_arg(['page' => 'agentos-mcp', 'message' => 'deleted'], admin_url('admin.php')));
+        exit;
+    }
+
+    public function handleMcpDiscover(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions.', 'agentos'));
+        }
+        check_admin_referer('agentos_mcp_discover');
+        $id = isset($_GET['connection']) ? sanitize_text_field(wp_unslash($_GET['connection'])) : '';
+        $result = $this->mcpClient->discover($id);
+        if (is_wp_error($result)) {
+            $connection = $this->mcpConnections->get($id);
+            $errorData = $result->get_error_data();
+            $diagnostic = is_array($errorData) && is_array($errorData['mcp_diagnostic'] ?? null) ? $errorData['mcp_diagnostic'] : [];
+            $reference = (string) ($diagnostic['reference'] ?? Diagnostics::newReference());
+            $this->mcpDiagnostics->recordError($result, $reference, (string) ($connection['label'] ?? ''), 'discovery', 'tools/list');
+        }
+        $message = is_wp_error($result) ? 'discovery_failed' : 'discovered';
+        wp_safe_redirect(add_query_arg(['page' => 'agentos-mcp', 'connection' => $id, 'message' => $message], admin_url('admin.php')));
+        exit;
     }
 
     public function renderAgentsPage(): void
@@ -163,7 +246,7 @@ class AdminController
 
         check_admin_referer('agentos_save_agent');
 
-        $payload = isset($_POST['agent']) ? (array) $_POST['agent'] : [];
+        $payload = isset($_POST['agent']) ? (array) wp_unslash($_POST['agent']) : [];
         $original = isset($_POST['original_slug']) ? sanitize_key($_POST['original_slug']) : '';
 
         $this->agents->upsert($payload, $original);
@@ -337,7 +420,13 @@ class AdminController
                 'source' => 'usage',
                 'tokens_realtime' => (int) ($row['tokens_realtime'] ?? 0),
                 'tokens_text' => (int) ($row['tokens_text'] ?? 0),
+                'tokens_transcription' => (int) ($row['tokens_transcription'] ?? 0),
+                'tokens_analysis' => (int) ($row['tokens_analysis'] ?? 0),
                 'tokens_total' => (int) ($row['tokens_total'] ?? 0),
+                'legacy_estimated_tokens' => (int) ($row['legacy_estimated_tokens'] ?? 0),
+                'verified_tokens' => (int) ($row['verified_tokens'] ?? 0),
+                'browser_reported_tokens' => (int) ($row['browser_reported_tokens'] ?? $row['browser_unverified_tokens'] ?? 0),
+                'browser_unverified_tokens' => (int) ($row['browser_unverified_tokens'] ?? 0),
                 'meta' => $this->normalizeUserMeta([]),
             ];
         }
@@ -353,7 +442,13 @@ class AdminController
                     'source' => 'manual',
                     'tokens_realtime' => 0,
                     'tokens_text' => 0,
+                    'tokens_transcription' => 0,
+                    'tokens_analysis' => 0,
                     'tokens_total' => 0,
+                    'legacy_estimated_tokens' => 0,
+                    'verified_tokens' => 0,
+                    'browser_reported_tokens' => 0,
+                    'browser_unverified_tokens' => 0,
                     'meta' => $this->normalizeUserMeta([]),
                 ];
             }
@@ -805,6 +900,7 @@ class AdminController
             'agent_slug' => $agentSlug,
             'post_types' => $postTypes,
             'settings' => $settings,
+            'mcp_connections' => $this->mcpConnections->all(),
         ]);
     }
 

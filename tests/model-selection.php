@@ -16,6 +16,15 @@ function get_option($key, $default = false)
     return $testOptions[$key] ?? $default;
 }
 
+function update_option($key, $value)
+{
+    $GLOBALS['testOptions'][$key] = $value;
+    return true;
+}
+
+function esc_url_raw($value) { return (string) $value; }
+function get_post_types($args = [], $output = 'names') { return ['tutor']; }
+
 function wp_parse_args($values, $defaults)
 {
     return array_merge($defaults, $values);
@@ -82,3 +91,30 @@ $testMeta[88]['voice_model'] = 'custom-post-model';
 $resolved = $repository->collectPostConfig($agent, 88);
 expectSame('custom-post-model', $resolved['model'], 'custom per-post model survives');
 expectSame(Config::FALLBACK_TEXT_MODEL, $resolved['text_model'], 'text model remains independent');
+
+$demoTranscription = Config::realtimeTranscriptionPayload('pt');
+expectSame([
+    'model' => 'gpt-live-transcribe',
+    'languages' => ['pt'],
+], $demoTranscription, 'Realtime demo language uses the live transcription schema');
+
+$tutorHint = 'Names from the course glossary';
+$tutorTranscription = Config::realtimeTranscriptionPayload('', $tutorHint);
+expectSame([
+    'model' => 'gpt-live-transcribe',
+    'prompt' => $tutorHint,
+], $tutorTranscription, 'Realtime tutor keeps its transcription hint and leaves language automatic');
+expectSame(false, array_key_exists('language', $tutorTranscription), 'Realtime transcription does not use the legacy language field');
+expectSame(false, array_key_exists('languages', $tutorTranscription), 'automatic language omits the languages constraint');
+expectSame('gpt-4o-mini-transcribe', Config::FALLBACK_TRANSCRIBE_MODEL, 'audio file uploads retain their transcription model');
+
+expectSame(false, array_key_exists('delay', Config::realtimeTranscriptionPayload()), 'existing agents leave transcription delay at the model default');
+foreach (['minimal', 'low', 'medium', 'high', 'xhigh', '1000'] as $delay) {
+    $input = array_merge($repository->blank(), ['slug' => 'delay-test', 'transcription_delay' => $delay]);
+    $repository->upsert($input, 'delay-test');
+    $saved = $repository->get('delay-test');
+    $config = $repository->collectPostConfig($saved, 88);
+    $payload = Config::realtimeTranscriptionPayload('pt', 'Course glossary', $config['transcription_delay']);
+    expectSame($delay === '1000' ? null : $delay, $payload['delay'] ?? null, 'saved delay reaches the API only when supported: ' . $delay);
+    expectSame(['pt'], $payload['languages'], 'delay preserves the language hint: ' . $delay);
+}

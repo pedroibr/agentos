@@ -4,7 +4,7 @@ namespace AgentOS\Core;
 
 class Config
 {
-    public const VERSION = '10.3.5';
+    public const VERSION = '10.5.2';
 
     public const OPTION_SETTINGS = 'agentos_settings';
     public const OPTION_AGENTS   = 'agentos_agents';
@@ -16,6 +16,8 @@ class Config
     public const FALLBACK_REALTIME_MODEL = self::FALLBACK_MODEL;
     public const FALLBACK_TEXT_MODEL = 'gpt-4.1-mini';
     public const FALLBACK_TRANSCRIBE_MODEL = 'gpt-4o-mini-transcribe';
+    public const FALLBACK_REALTIME_TRANSCRIBE_MODEL = 'gpt-live-transcribe';
+    public const RESPONSES_MIN_OUTPUT_TOKENS = 16;
     public const FALLBACK_VOICE  = 'alloy';
     public const FALLBACK_PROMPT = 'You are a helpful, concise AI agent. Speak naturally.';
 
@@ -30,6 +32,23 @@ class Config
         }
 
         return $model;
+    }
+
+    /** Build the input transcription options for a Realtime conversation. */
+    public static function realtimeTranscriptionPayload(string $languageHint = '', string $prompt = '', string $delay = ''): array
+    {
+        $payload = ['model' => self::FALLBACK_REALTIME_TRANSCRIBE_MODEL];
+        if (in_array($languageHint, ['en', 'pt'], true)) {
+            $payload['languages'] = [$languageHint];
+        }
+        if ($prompt !== '') {
+            $payload['prompt'] = $prompt;
+        }
+        if (in_array($delay, ['minimal', 'low', 'medium', 'high', 'xhigh'], true)) {
+            $payload['delay'] = $delay;
+        }
+
+        return $payload;
     }
 
     public static function pluginFile(): string
