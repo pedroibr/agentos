@@ -69,15 +69,6 @@ class AdminController
 
         add_submenu_page(
             'agentos',
-            __('MCP Connections', 'agentos'),
-            __('MCP Connections', 'agentos'),
-            $capability,
-            'agentos-mcp',
-            [$this, 'renderMcpPage']
-        );
-
-        add_submenu_page(
-            'agentos',
             __('Agents', 'agentos'),
             __('Agents', 'agentos'),
             $capability,
@@ -110,6 +101,15 @@ class AdminController
             $capability,
             'agentos-sessions',
             [$this, 'renderSessionsPage']
+        );
+
+        add_submenu_page(
+            'agentos',
+            __('MCP Connections', 'agentos'),
+            __('MCP Connections', 'agentos'),
+            $capability,
+            'agentos-mcp',
+            [$this, 'renderMcpPage']
         );
 
         add_submenu_page(

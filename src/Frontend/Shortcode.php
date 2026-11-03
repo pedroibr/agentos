@@ -82,6 +82,7 @@ class Shortcode
             'viewer_is_authenticated' => is_user_logged_in(),
             'context_params' => $contextParams,
             'logging' => !empty($settings['enable_logging']),
+            'show_token_usage' => $this->settings->canShowTokenUsage(),
             'show_transcript' => !empty($agent['show_transcript']),
             'analysis_enabled' => !empty($agent['analysis_enabled']),
             'require_subscription' => !empty($agent['require_subscription']),

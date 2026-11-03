@@ -13,7 +13,7 @@ const tick = async () => { for (let i=0;i<8;i++) await Promise.resolve(); };
 const waitUntil = async (predicate, label) => { for (let i=0;i<40;i++) { if (predicate()) return; await tick(); } throw new Error('Timed out waiting for ' + label); };
 const completionWatchdog = setTimeout(() => { console.error('FAIL integration: realtime embed suite did not reach its completion sentinel'); process.exitCode = 1; }, 10000);
 function setup(options={}) {
- const config = { rest:'https://test.invalid/wp-json/agentos/v1',post_id:2,agent_id:'agent01',nonce:'test-nonce',mode:options.mode||'voice',viewer_is_authenticated:true,show_transcript:true,logging:!!options.logging };
+ const config = { rest:'https://test.invalid/wp-json/agentos/v1',post_id:2,agent_id:'agent01',nonce:'test-nonce',mode:options.mode||'voice',viewer_is_authenticated:options.authenticated!==false,show_transcript:true,logging:!!options.logging,show_token_usage:!!options.showTokenUsage };
  const {window: domWindow,document}=parseHTML(`<html><body><div class="agentos-wrap" data-mode="${config.mode}" data-show-transcript="1"><div class="agentos-shell"></div><button class="agentos-sidebar-toggle"></button><button class="agentos-sidebar__dismiss"></button><button class="agentos-sidebar-backdrop"></button><button class="agentos-sidebar__new"></button><div class="agentos-session-list"></div><div class="agentos-voice-stage__workspace-title"></div><div class="agentos-transcript"><div class="agentos-transcript__title"></div><div class="agentos-transcript__status"></div><div class="agentos-transcript-log"></div><div class="agentos-transcript__hint-text">Save feedback</div></div><div class="agentos-session-meta__summary"></div><div class="agentos-feedback__content">Feedback</div><audio class="agentos-audio"></audio><div class="agentos-toolbar agentos-bar"><button class="agentos-start"><span class="agentos-btn__label">Start voice</span></button><button class="agentos-stop"></button><button class="agentos-save"></button><span class="agentos-status"></span></div><div class="agentos-text-ui"><textarea class="agentos-text-input"></textarea><button class="agentos-text-send"></button><button class="agentos-text-record"></button></div></div></body></html>`);
  const window = {HTMLElement: domWindow.HTMLElement};
  document.querySelector('.agentos-wrap').dataset.config=JSON.stringify(config);
@@ -27,7 +27,7 @@ function setup(options={}) {
  window.addEventListener=(type,fn)=>(windowListeners[type]??=[]).push(fn);
  window.matchMedia=()=>({matches:false,addEventListener(){},removeEventListener(){}});
  window.innerWidth=1300;window.innerHeight=900;
- window.location={href:'https://test.invalid/sample-page/'};
+ window.location={href:options.url||'https://test.invalid/sample-page/'};
  window.AgentOSRealtime=realtime;
  window.AgentOSTools=tools;
  const audio=document.querySelector('audio');audio.pause=()=>{};audio.play=()=>options.playbackRejected?Promise.reject(Object.assign(new Error('Blocked'),{name:'NotAllowedError'})):Promise.resolve();
@@ -53,6 +53,24 @@ function setup(options={}) {
  return {window,document,find,trigger,tracks,peers,calls,logs,makeStream,media,windowListeners,timers,fireTimerDelay,runTimerDelay,status:()=>find('.agentos-status').textContent,messages:()=>[...document.querySelectorAll('.msg')].map(el=>el.textContent)};
 }
 (async()=>{
+ for (const authenticated of [false,true]) {
+  const view=setup({authenticated,url:'https://test.invalid/sample-page/?email=visitor%2Bdemo%40example.com'});
+  await view.trigger('.agentos-start');
+  view.peers[0].channel.emit({type:'conversation.item.input_audio_transcription.completed',item_id:'guest-message',transcript:'Hello'});
+  await view.trigger('.agentos-save');
+  const payload=JSON.parse(view.calls.find(call=>call.url.endsWith('/transcript-db')&&call.args.method==='POST').args.body);
+  assert.equal(payload.guest_email,authenticated?'':'visitor+demo@example.com');
+ }
+ console.log('PASS integration: saved guest email comes from URL only for logged-out visitors');
+ for (const showTokenUsage of [false,true]) {
+  const view=setup({showTokenUsage,history:[{id:1,created_at:'2026-10-27 12:00:00',analysis_status:'idle',tokens_total:75646,transcript:[]}]});
+  await tick();
+  const saved=view.document.querySelectorAll('.agentos-session-item')[1];
+  assert.equal(saved.textContent.includes('75646 tokens'),showTokenUsage);
+  await view.trigger(saved);
+  assert.equal(view.find('.agentos-session-meta__summary').textContent.includes('75646 tokens'),showTokenUsage);
+ }
+ console.log('PASS integration: token counts follow visibility setting in history and session details');
  const fail=setup({failToken:true});await fail.trigger('.agentos-start');assert.equal(fail.tracks[0].stopped,1);assert.equal(fail.find('.agentos-start').disabled,false);assert.match(fail.status(),/error/i);console.log('PASS integration: failed token releases microphone and enables retry');
  const active=setup();await active.trigger('.agentos-start');const channel=active.peers[0].channel;
  channel.emit({type:'conversation.item.added',item:{id:'u1',role:'user'},previous_item_id:null});

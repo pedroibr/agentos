@@ -17,6 +17,7 @@ class Settings
                     'api_key_manual' => '',
                     'context_params' => ['nome', 'produto', 'etapa'],
                     'enable_logging' => false,
+                    'show_token_usage' => false,
                     'integration_api_enabled' => false,
                     'integration_api_key_hash' => '',
                     'integration_api_key_plain' => '',
@@ -40,6 +41,7 @@ class Settings
         $out['api_key_source'] = in_array($source, ['env', 'constant', 'manual'], true) ? $source : 'constant';
         $out['api_key_manual'] = sanitize_text_field($out['api_key_manual'] ?? '');
         $out['enable_logging'] = !empty($out['enable_logging']) ? 1 : 0;
+        $out['show_token_usage'] = !empty($out['show_token_usage']) ? 1 : 0;
         $out['integration_api_enabled'] = !empty($out['integration_api_enabled']) ? 1 : 0;
         $out['integration_api_key_hash'] = sanitize_text_field($existing['integration_api_key_hash'] ?? '');
         $out['integration_api_key_plain'] = sanitize_text_field($existing['integration_api_key_plain'] ?? '');
@@ -81,6 +83,7 @@ class Settings
                 'api_key_manual' => '',
                 'context_params' => ['nome', 'produto', 'etapa'],
                 'enable_logging' => false,
+                'show_token_usage' => false,
                 'integration_api_enabled' => false,
                 'integration_api_key_hash' => '',
                 'integration_api_key_plain' => '',
@@ -104,6 +107,11 @@ class Settings
         }
 
         return defined('OPENAI_API_KEY') ? OPENAI_API_KEY : '';
+    }
+
+    public function canShowTokenUsage(): bool
+    {
+        return current_user_can('manage_options') && !empty($this->get()['show_token_usage']);
     }
 
     public function isIntegrationApiEnabled(): bool

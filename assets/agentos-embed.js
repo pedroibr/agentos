@@ -593,7 +593,7 @@
       if (!item) return 'Current live session';
       const bits = [];
       if (item.analysis_status) bits.push(item.analysis_status);
-      if (item.tokens_total) bits.push(item.tokens_total + ' tokens');
+      if (cfg.show_token_usage === true && item.tokens_total) bits.push(item.tokens_total + ' tokens');
       if (item.duration_seconds) bits.push(item.duration_seconds + 's');
       return bits.join(' · ') || 'Saved session';
     }
@@ -2029,6 +2029,7 @@
           anon_id: getAnonId(),
           model: activeModel || '',
           voice: activeVoice || '',
+          guest_email: viewerIsAuthenticated ? '' : (new URL(window.location.href).searchParams.get('email') || ''),
           subscription_slug: activeSubscription || '',
           context: activeContext || {},
           user_agent: navigator.userAgent,

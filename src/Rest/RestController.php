@@ -1161,10 +1161,12 @@ class RestController
         $contextPayload = $request->get_param('context');
 
         $currentUser = wp_get_current_user();
-        $userEmail = '';
-        if ($currentUser && $currentUser instanceof \WP_User && $currentUser->exists()) {
-            $userEmail = sanitize_email($currentUser->user_email);
-        }
+        $authenticated = $currentUser && $currentUser instanceof \WP_User && $currentUser->exists();
+        $userEmail = \AgentOS\Core\SessionEmail::resolve(
+            (bool) $authenticated,
+            $authenticated ? (string) $currentUser->user_email : '',
+            $request->get_param('guest_email')
+        );
 
         $userKey = $this->resolveUserKey($anonId);
 

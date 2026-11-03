@@ -1,5 +1,10 @@
 # Updates
 
+## 10.5.3 - 2026-11-03
+
+- Store a valid guest email from the page's `email` URL parameter when a transcript is saved; authenticated users retain their WordPress account email. The guest email is an unverified contact field and does not create an account or grant access.
+- Add an administrator-only, opt-in frontend token-count display and place MCP Connections before Settings in the admin submenu.
+
 ## 10.5.2 - 2026-10-27
 
 - Added opt-in, content-free input transcription diagnostics showing event order, VAD audio timestamps, completion state, and provider/ledger/archive/rendered character counts. Logs remain local to the browser console and follow the existing logging setting.

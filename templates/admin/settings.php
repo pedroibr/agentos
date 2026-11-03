@@ -36,6 +36,16 @@ if (!defined('ABSPATH')) {
         </td>
       </tr>
       <tr>
+        <th scope="row"><?php esc_html_e('Show conversation token usage', 'agentos'); ?></th>
+        <td>
+          <label class="agentos-setting-toggle">
+            <input type="checkbox" role="switch" name="<?php echo esc_attr($option_key); ?>[show_token_usage]" value="1" <?php checked(!empty($settings['show_token_usage'])); ?>>
+            <span class="agentos-setting-toggle__track" aria-hidden="true"></span>
+            <?php esc_html_e('Show conversation token counts to administrators on the frontend.', 'agentos'); ?>
+          </label>
+        </td>
+      </tr>
+      <tr>
         <th scope="row"><?php esc_html_e('Enable Integration API', 'agentos'); ?></th>
         <td>
           <label>
@@ -80,6 +90,15 @@ if (!defined('ABSPATH')) {
       </button>
     </p>
   </form>
+  <style>
+    .agentos-setting-toggle { display: inline-flex; align-items: center; gap: 10px; }
+    .agentos-setting-toggle input { position: absolute; opacity: 0; }
+    .agentos-setting-toggle__track { position: relative; width: 36px; height: 20px; border-radius: 10px; background: #757575; flex: 0 0 auto; }
+    .agentos-setting-toggle__track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .agentos-setting-toggle input:checked + .agentos-setting-toggle__track { background: #2271b1; }
+    .agentos-setting-toggle input:checked + .agentos-setting-toggle__track::after { transform: translateX(16px); }
+    .agentos-setting-toggle input:focus-visible + .agentos-setting-toggle__track { outline: 2px solid #2271b1; outline-offset: 2px; }
+  </style>
   <script>
     (function(){
       if (!<?php echo $settings['enable_logging'] ? 'true' : 'false'; ?>) {
